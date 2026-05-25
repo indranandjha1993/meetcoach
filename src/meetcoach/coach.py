@@ -1,0 +1,164 @@
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import shutil
+import time
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from meetcoach.config import Settings
+
+COACH_SYSTEM = """\
+You are a silent meeting coach watching a live transcript. The transcript is
+multi-speaker. "You:" lines are spoken by the user you assist. "Other:" lines
+are everyone else in the meeting.
+
+Your job: surface only what is high-value for the user, in 1-3 short bullets:
+- A direct question to them they haven't answered
+- A factual claim that seems wrong or needs checking
+- A point they should make next
+- A commitment or action item they should capture
+
+If nothing notable since the last check, respond with the literal word: PASS
+
+Be terse. No headers. No restating what was said. No filler. Markdown bullets only.
+"""
+
+ASK_SYSTEM = """\
+You are an on-demand assistant for a live meeting. The user will paste a
+transcript and ask a question about it. Answer concisely and directly. Use
+markdown if it helps. Cite a specific line if relevant. If you don't have
+enough info, say so.
+"""
+
+
+@dataclass(slots=True)
+class TranscriptLine:
+    speaker: str
+    text: str
+    ts: float
+
+    def format(self) -> str:
+        t = time.strftime("%H:%M:%S", time.localtime(self.ts))
+        label = "You" if self.speaker == "you" else "Other"
+        return f"[{t}] {label}: {self.text}"
+
+
+@dataclass(slots=True)
+class Coach:
+    settings: Settings
+    on_suggestion: Callable[[str], None]
+    on_ask_reply: Callable[[str, str], None]
+    lines: list[TranscriptLine] = field(default_factory=list)
+    transcript_path: Path | None = None
+    _last_sent_idx: int = 0
+    _stable_idx: int = 0
+    _last_stable_refresh: float = field(default_factory=time.time)
+    _paused: bool = False
+    _tick_task: asyncio.Task | None = None
+    _inflight: bool = False
+
+    def __post_init__(self) -> None:
+        self.settings.transcript_dir.mkdir(parents=True, exist_ok=True)
+        ts = time.strftime("%Y%m%d-%H%M%S")
+        self.transcript_path = self.settings.transcript_dir / f"meeting-{ts}.txt"
+        self.transcript_path.touch()
+
+        stable_dir = Path.home() / ".meetcoach"
+        stable_dir.mkdir(parents=True, exist_ok=True)
+        stable_link = stable_dir / "current.txt"
+        with contextlib.suppress(FileNotFoundError):
+            stable_link.unlink()
+        stable_link.symlink_to(self.transcript_path)
+
+    def add_line(self, speaker: str, text: str) -> None:
+        line = TranscriptLine(speaker=speaker, text=text, ts=time.time())
+        self.lines.append(line)
+        if self.transcript_path:
+            with self.transcript_path.open("a") as f:
+                f.write(line.format() + "\n")
+
+    def toggle_pause(self) -> bool:
+        self._paused = not self._paused
+        return self._paused
+
+    async def start(self) -> None:
+        self._tick_task = asyncio.create_task(self._loop())
+
+    async def stop(self) -> None:
+        if self._tick_task:
+            self._tick_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._tick_task
+
+    async def _loop(self) -> None:
+        while True:
+            await asyncio.sleep(self.settings.coach_interval)
+            if self._paused or self._inflight:
+                continue
+            new_lines = self.lines[self._last_sent_idx :]
+            new_chars = sum(len(line.text) for line in new_lines)
+            if new_chars < self.settings.coach_min_new_chars:
+                continue
+            await self._tick()
+
+    async def _tick(self) -> None:
+        self._inflight = True
+        try:
+            if time.time() - self._last_stable_refresh > 240:
+                self._stable_idx = max(0, len(self.lines) - 4)
+                self._last_stable_refresh = time.time()
+
+            stable = "\n".join(line.format() for line in self.lines[: self._stable_idx]) or "(none yet)"
+            fresh = "\n".join(line.format() for line in self.lines[self._stable_idx :])
+            self._last_sent_idx = len(self.lines)
+
+            prompt = (
+                f"<transcript_so_far>\n{stable}\n</transcript_so_far>\n\n"
+                f"<new_since_last_check>\n{fresh}\n</new_since_last_check>\n\n"
+                "Apply your rules. Respond now."
+            )
+            reply = await self._invoke_claude(COACH_SYSTEM, prompt)
+            if reply and reply.strip().upper() != "PASS":
+                self.on_suggestion(reply.strip())
+        finally:
+            self._inflight = False
+
+    async def ask(self, question: str) -> None:
+        full = "\n".join(line.format() for line in self.lines) or "(no transcript yet)"
+        prompt = (
+            f"<transcript>\n{full}\n</transcript>\n\n"
+            f"<question>\n{question}\n</question>"
+        )
+        reply = await self._invoke_claude(ASK_SYSTEM, prompt)
+        self.on_ask_reply(question, reply.strip() if reply else "(no response)")
+
+    async def _invoke_claude(self, system: str, prompt: str) -> str:
+        bin_path = shutil.which(self.settings.claude_bin) or self.settings.claude_bin
+        cmd = [bin_path, "-p", "--output-format", "text", "--append-system-prompt", system]
+        if self.settings.coach_model:
+            cmd += ["--model", self.settings.coach_model]
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except FileNotFoundError:
+            return f"[error: claude CLI not found at {bin_path!r}]"
+
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(prompt.encode()), timeout=60
+            )
+        except TimeoutError:
+            proc.kill()
+            return "[error: claude CLI timed out]"
+
+        if proc.returncode != 0:
+            err = stderr.decode(errors="replace").strip()[:200]
+            return f"[error: claude exited {proc.returncode}: {err}]"
+        return stdout.decode(errors="replace")
