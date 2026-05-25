@@ -137,13 +137,15 @@ class DeepgramTranscriber(Transcriber):
                     reader.cancel()
 
     async def close(self) -> None:
-        for reader in self._readers.values():
+        readers = list(self._readers.values())
+        conns = list(self._conns.values())
+        self._readers.clear()
+        self._conns.clear()
+        for reader in readers:
             reader.cancel()
-        for conn in self._conns.values():
+        for conn in conns:
             with contextlib.suppress(Exception):
                 await conn.close()  # type: ignore[attr-defined]
-        self._conns.clear()
-        self._readers.clear()
 
 
 class WhisperTranscriber(Transcriber):

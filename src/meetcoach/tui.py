@@ -189,9 +189,19 @@ class MeetCoachApp(App):
                 row.remove_class("visible")
 
     async def on_unmount(self) -> None:
-        if self.coach:
-            await self.coach.stop()
-        if self.transcriber:
-            await self.transcriber.close()
+        import contextlib
+
         if self.capture:
-            await self.capture.stop()
+            with contextlib.suppress(Exception):
+                await self.capture.stop()
+        if self.transcriber:
+            with contextlib.suppress(Exception):
+                await self.transcriber.close()
+        if self.coach:
+            with contextlib.suppress(Exception):
+                await self.coach.stop()
+        for task in list(self._bg):
+            task.cancel()
+        if self._bg:
+            with contextlib.suppress(Exception):
+                await asyncio.gather(*self._bg, return_exceptions=True)

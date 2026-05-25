@@ -86,17 +86,18 @@ class DualCapture:
 
     def _make_callback(self, speaker: Speaker):
         def cb(indata, _frames, _time, _status):
+            loop = self._loop
+            q = self._async_q
+            if loop is None or q is None or loop.is_closed():
+                return
             mono = indata.mean(axis=1) if indata.ndim > 1 else indata
             pcm = np.clip(mono * 32767, -32768, 32767).astype(np.int16).copy()
             chunk = AudioChunk(speaker, pcm, self.sample_rate)
-            loop = self._loop
-            q = self._async_q
-            if loop is None or q is None:
-                return
             def _put() -> None:
                 with contextlib.suppress(asyncio.QueueFull):
                     q.put_nowait(chunk)
-            loop.call_soon_threadsafe(_put)
+            with contextlib.suppress(RuntimeError):
+                loop.call_soon_threadsafe(_put)
 
         return cb
 
