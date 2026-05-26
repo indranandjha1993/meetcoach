@@ -20,11 +20,13 @@ Works two ways:
 ### 1. Clone and install Python deps
 
 ```bash
-git clone <repo-url> meetcoach
+git clone https://github.com/indranandjha1993/meetcoach.git
 cd meetcoach
 uv venv --python 3.13
 uv pip install -e .
 ```
+
+(SSH users: `git clone git@github.com:indranandjha1993/meetcoach.git`.)
 
 ### 2. Install BlackHole
 
