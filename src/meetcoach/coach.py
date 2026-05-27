@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import shutil
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from meetcoach.config import Settings
+from meetcoach.providers import CoachProvider, get_provider
 
 COACH_SYSTEM = """\
 You are a silent meeting coach watching a live transcript. The transcript is
@@ -90,6 +90,7 @@ class Coach:
     lines: list[TranscriptLine] = field(default_factory=list)
     transcript_path: Path | None = None
     labeler: SpeakerLabeler | None = None
+    provider: CoachProvider | None = None
     _last_sent_idx: int = 0
     _stable_idx: int = 0
     _last_stable_refresh: float = field(default_factory=time.time)
@@ -115,6 +116,17 @@ class Coach:
                 mic_label=self.settings.mic_label,
                 names=self.settings.names,
             )
+
+        if self.provider is None:
+            self.provider = get_provider(
+                name=self.settings.coach_provider,
+                binary=self.settings.coach_bin,
+                model=self.settings.coach_model,
+            )
+
+    def set_provider(self, provider: CoachProvider) -> None:
+        """Swap the active coach provider at runtime (used by TUI [s] hotkey)."""
+        self.provider = provider
 
     def add_line(self, speaker: str, text: str) -> None:
         line = TranscriptLine(speaker=speaker, text=text, ts=time.time())
@@ -163,7 +175,7 @@ class Coach:
                 f"<new_since_last_check>\n{fresh}\n</new_since_last_check>\n\n"
                 "Apply your rules. Respond now."
             )
-            reply = await self._invoke_claude(COACH_SYSTEM, prompt)
+            reply = await self._invoke(COACH_SYSTEM, prompt)
             if reply and reply.strip().upper() != "PASS":
                 self.on_suggestion(reply.strip())
         finally:
@@ -175,33 +187,10 @@ class Coach:
             f"<transcript>\n{full}\n</transcript>\n\n"
             f"<question>\n{question}\n</question>"
         )
-        reply = await self._invoke_claude(ASK_SYSTEM, prompt)
+        reply = await self._invoke(ASK_SYSTEM, prompt)
         self.on_ask_reply(question, reply.strip() if reply else "(no response)")
 
-    async def _invoke_claude(self, system: str, prompt: str) -> str:
-        bin_path = shutil.which(self.settings.claude_bin) or self.settings.claude_bin
-        cmd = [bin_path, "-p", "--output-format", "text", "--append-system-prompt", system]
-        if self.settings.coach_model:
-            cmd += ["--model", self.settings.coach_model]
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-        except FileNotFoundError:
-            return f"[error: claude CLI not found at {bin_path!r}]"
-
-        try:
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(prompt.encode()), timeout=60
-            )
-        except TimeoutError:
-            proc.kill()
-            return "[error: claude CLI timed out]"
-
-        if proc.returncode != 0:
-            err = stderr.decode(errors="replace").strip()[:200]
-            return f"[error: claude exited {proc.returncode}: {err}]"
-        return stdout.decode(errors="replace")
+    async def _invoke(self, system: str, prompt: str) -> str:
+        if self.provider is None:
+            return "[error: no coach provider configured]"
+        return await self.provider.invoke(system, prompt, timeout_s=60)

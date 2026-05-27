@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import shutil
 import sys
 
 import click
@@ -9,6 +8,7 @@ from rich.table import Table
 
 from meetcoach.audio import find_blackhole, find_default_mic, find_device, list_devices
 from meetcoach.config import Settings
+from meetcoach.providers import PROVIDER_CLASSES, detect_available_providers
 
 console = Console()
 
@@ -58,12 +58,35 @@ def doctor() -> None:
     else:
         console.print(f"[green]✓[/] Default mic at device index {mic}")
 
-    claude_path = shutil.which(settings.claude_bin)
-    if claude_path:
-        console.print(f"[green]✓[/] claude CLI at {claude_path}")
-    else:
-        console.print(f"[red]✗[/] claude CLI not found (looked for {settings.claude_bin!r}).")
+    console.print("[bold]Coach providers:[/]")
+    any_provider_available = False
+    for name, available, path in detect_available_providers():
+        cls = PROVIDER_CLASSES[name]
+        if available:
+            mark = "[green]✓[/]"
+            console.print(f"  {mark} {name:8s} {path}")
+            any_provider_available = True
+        else:
+            mark = "[yellow]-[/]"
+            console.print(f"  {mark} {name:8s} (install: {cls.install_hint})")
+    if not any_provider_available:
+        console.print("[red]✗[/] No coach providers available — install at least one")
         ok = False
+    preferred = settings.coach_provider
+    pref_cls = PROVIDER_CLASSES.get(preferred)
+    if pref_cls is None:
+        console.print(
+            f"[red]✗[/] Configured coach_provider={preferred!r} is not a known provider. "
+            f"Pick one of: {', '.join(PROVIDER_CLASSES.keys())}"
+        )
+        ok = False
+    elif not pref_cls.is_available(settings.coach_bin):
+        console.print(
+            f"[red]✗[/] Configured coach_provider={preferred!r} but its CLI isn't installed."
+        )
+        ok = False
+    else:
+        console.print(f"[green]✓[/] Active coach provider: {preferred}")
 
     engine = settings.resolve_engine()
     if engine == "deepgram":
@@ -107,7 +130,21 @@ def doctor() -> None:
     show_default=True,
     help="Seconds between coach ticks.",
 )
-@click.option("--model", "coach_model", default=None, help="Override --model passed to claude -p.")
+@click.option(
+    "--coach-provider",
+    type=click.Choice(list(PROVIDER_CLASSES.keys())),
+    default=None,
+    help="LLM provider for the coach (default: claude, override via COACH_PROVIDER env).",
+)
+@click.option(
+    "--coach-bin",
+    default=None,
+    help="Override the binary path for the chosen provider.",
+)
+@click.option(
+    "--model", "coach_model", default=None,
+    help="Model name passed through to the coach CLI (e.g. claude-haiku-4-5).",
+)
 @click.option("--no-mic", is_flag=True, help="Skip mic capture (system audio only).")
 @click.option("--no-system", is_flag=True, help="Skip system audio capture (mic only).")
 @click.option(
@@ -130,6 +167,8 @@ def start(
     engine: str,
     whisper_model: str,
     interval: float,
+    coach_provider: str | None,
+    coach_bin: str | None,
     coach_model: str | None,
     no_mic: bool,
     no_system: bool,
@@ -151,6 +190,24 @@ def start(
             "Pass --no-system to silence this warning, or install BlackHole.[/]"
         )
 
+    # Fail fast if the chosen provider's CLI is missing — better than silently
+    # starting and only seeing errors in the coach pane every 25s.
+    settings_defaults = Settings()
+    chosen_provider = coach_provider or settings_defaults.coach_provider
+    provider_cls = PROVIDER_CLASSES.get(chosen_provider)
+    if provider_cls is None:
+        console.print(
+            f"[red]Unknown coach provider: {chosen_provider!r}.[/] "
+            f"Available: {', '.join(PROVIDER_CLASSES)}"
+        )
+        sys.exit(2)
+    if not provider_cls.is_available(coach_bin):
+        console.print(
+            f"[red]Coach provider '{chosen_provider}' CLI not found.[/] "
+            f"Install: {provider_cls.install_hint}"
+        )
+        sys.exit(2)
+
     name_list = [n.strip() for n in names.split(",") if n.strip()] if names else []
     settings = Settings(
         mic_device=mic_idx,
@@ -158,6 +215,8 @@ def start(
         engine=engine,
         whisper_model=whisper_model,
         coach_interval=interval,
+        coach_provider=chosen_provider,
+        coach_bin=coach_bin,
         coach_model=coach_model,
         mic_label=mic_label,
         names=name_list,

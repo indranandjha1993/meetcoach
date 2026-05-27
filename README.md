@@ -153,26 +153,34 @@ Expected output:
 
 There are **two independent coach paths**, and you can use them at the same time or separately. They're different and serve different purposes — this is the most common point of confusion.
 
-### Path A — the TUI auto-coach (`claude -p` subprocess)
+### Path A — the TUI auto-coach (LLM CLI subprocess)
 
 The Textual TUI's right-hand pane. It fires automatically every 25 seconds. Mechanism:
 
 ```
 TUI tick (every 25s)
   ├── if new transcript lines exist
-  └── spawn `claude -p --append-system-prompt "<coach instructions>"`
-      with the rolling transcript piped to stdin
-       └── Claude responds with bullets OR literal "PASS"
+  └── spawn `<provider CLI>` with coach instructions + rolling transcript
+       └── LLM responds with bullets OR literal "PASS"
             └── if not PASS, write to Coach pane
 ```
 
-- **Which LLM**: whatever model your Claude CLI defaults to (typically Sonnet 4.6 or Opus 4.7 depending on your Max plan tier). Override with `--model` on `meetcoach start`.
-- **Where it runs**: a subprocess of meetcoach. Each tick is a fresh `claude -p` invocation.
-- **Cost**: $0 per call (uses your Max plan). Subprocess spawn overhead ~300ms.
+**Pick your LLM provider** with `--coach-provider`:
+
+| Provider | CLI | Install | Default model |
+|---|---|---|---|
+| `claude` *(default)* | `claude` (Claude Code) | https://docs.claude.com/en/docs/claude-code | Your Max plan's default (Sonnet 4.6 / Opus 4.7) |
+| `gemini` | `gemini` (Google's CLI) | `npm install -g @google/gemini-cli` | Whatever `gemini` defaults to |
+| `codex` | `codex` (OpenAI's CLI) | `npm install -g @openai/codex` | Whatever `codex exec` defaults to |
+
+`meetcoach start --coach-provider gemini --model gemini-2.5-flash` overrides at launch. If the chosen provider's CLI isn't installed, meetcoach fails fast at startup with an install hint. Run `meetcoach doctor` to see which providers are available on your machine.
+
+- **Where it runs**: a subprocess of meetcoach. Each tick is a fresh CLI invocation.
+- **Cost**: $0 per call for `claude` (uses your Max plan). Other providers depend on their billing — Gemini CLI uses your Google AI account, Codex uses your OpenAI account.
 - **Project context**: gets nothing automatic. It only sees what you pass — by default just the transcript + coach instructions.
 - **Use when**: you want passive monitoring with built-in bullet-style coaching, displayed alongside the live transcript in one terminal.
 
-You can also press `[a]` in the TUI to ask Claude an on-demand question about the meeting so far — same subprocess path, different system prompt.
+You can also press `[a]` in the TUI to ask the LLM an on-demand question about the meeting so far — same subprocess path, different system prompt.
 
 ### Path B — the `/meeting` slash command (Claude Code + MCP)
 
@@ -375,15 +383,23 @@ meetcoach doctor        Sanity-check the environment
 meetcoach start         Launch the TUI
 
 Common flags for `start`:
-  --mic <name|index>          Override default mic (substring match works)
-  --system <name|index>       Override system-audio device (default: BlackHole)
-  --no-mic                    Skip mic capture (use system audio only)
-  --no-system                 Skip system-audio capture (mic only)
-  --mic-label NAME            Label for your mic in the transcript (default: "You")
-  --names "N1,N2,..."         Names for remote speakers, first-seen-wins assignment
-  --interval <seconds>        Coach tick interval (default: 25)
-  --model <name>              Pass --model to claude -p
-  --engine deepgram|whisper   Force STT backend (default: auto-detect from env)
+  --mic <name|index>             Override default mic (substring match works)
+  --system <name|index>          Override system-audio device (default: BlackHole)
+  --no-mic                       Skip mic capture (use system audio only)
+  --no-system                    Skip system-audio capture (mic only)
+  --mic-label NAME               Label for your mic in the transcript (default: "You")
+  --names "N1,N2,..."            Names for remote speakers, first-seen-wins assignment
+  --interval <seconds>           Coach tick interval (default: 25)
+  --coach-provider <name>        LLM CLI to use: claude (default), gemini, codex
+  --coach-bin <path>             Override the binary path for the chosen provider
+  --model <name>                 Model name passed through to the coach CLI
+  --engine deepgram|whisper      Force STT backend (default: auto-detect from env)
+
+Env-var overrides (read from .env):
+  DEEPGRAM_API_KEY               Required for Deepgram STT
+  COACH_PROVIDER                 claude | gemini | codex
+  COACH_BIN                      Absolute path to the coach CLI binary
+  COACH_MODEL                    Default model name passed to the coach CLI
 
 meetcoach-mcp           Launch the MCP server (used by Claude Code, not by you directly)
 ```
@@ -457,7 +473,10 @@ A: The slash command's `allowed-tools` includes `mcp__meetcoach__*` plus `Bash` 
 A: No. meetcoach itself is installed once. The slash command is user-scoped at `~/.claude/commands/meeting.md` (a symlink into this repo) and works in any project's `claude` session. The MCP server is registered once in `~/.claude/settings.json` and is available globally. The only thing that's per-project is whatever's in each project's `CLAUDE.md` / `.claude/` config, which the `/meeting` agent picks up automatically.
 
 **Q: Can I use this with Anthropic API key instead of Claude Max?**
-A: Not as-shipped. Both the TUI auto-coach and the `/meeting` slash command go through your `claude` CLI binary, which is tied to your Max plan. To switch, you'd need to (a) refactor `coach.py` to call the Anthropic SDK directly, and (b) the `/meeting` slash command would still need a Claude Code session, which itself uses Max. For now, Max is required.
+A: Not as-shipped. The TUI auto-coach can use Claude / Gemini / Codex via their CLIs (see `--coach-provider`), but `claude` specifically uses your Max plan, not the API. The `/meeting` slash command always runs in a Claude Code session, which itself uses your Max plan. If you want to bypass Max, the cleanest path is to use `--coach-provider gemini` or `--coach-provider codex` for the TUI auto-coach (which use Google/OpenAI accounts respectively), and accept that `/meeting` still needs Claude Code.
+
+**Q: What if my preferred coach CLI isn't installed?**
+A: Run `meetcoach doctor` — it lists which of `claude`, `gemini`, `codex` are detected on your PATH and gives install hints for the missing ones. If you launch with `--coach-provider X` and that CLI isn't installed, meetcoach exits with an error before opening the TUI — no silent failures.
 
 **Q: Can I use this on Linux or Windows?**
 A: macOS-only today. BlackHole is macOS-only; on Linux you'd swap in PulseAudio's loopback module, on Windows you'd use VB-Audio Cable. The rest of the pipeline (sounddevice, Deepgram, MCP server, Claude CLI) is cross-platform — porting is plausible but unimplemented.

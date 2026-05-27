@@ -22,6 +22,8 @@ class Settings:
     coach_interval: float = 25.0
     coach_min_new_chars: int = 80
     coach_model: str | None = field(default_factory=lambda: os.getenv("COACH_MODEL"))
+    coach_provider: str = field(default_factory=lambda: os.getenv("COACH_PROVIDER", "claude"))
+    coach_bin: str | None = field(default_factory=lambda: os.getenv("COACH_BIN"))
     claude_bin: str = field(default_factory=lambda: os.getenv("CLAUDE_BIN", "claude"))
     deepgram_key: str | None = field(default_factory=lambda: os.getenv("DEEPGRAM_API_KEY"))
     transcript_dir: Path = TRANSCRIPT_DIR
