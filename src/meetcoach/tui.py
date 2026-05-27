@@ -34,6 +34,7 @@ class MeetCoachApp(App):
 
     BINDINGS: ClassVar = [
         Binding("a", "ask", "Ask Claude"),
+        Binding("m", "toggle_mic", "Mute mic"),
         Binding("p", "toggle_pause", "Pause coach"),
         Binding("c", "clear_coach", "Clear coach pane"),
         Binding("q", "quit", "Quit"),
@@ -186,6 +187,13 @@ class MeetCoachApp(App):
             return
         paused = self.coach.toggle_pause()
         self._log_coach(f"[dim]coach {'paused' if paused else 'resumed'}[/]")
+
+    def action_toggle_mic(self) -> None:
+        if not self.capture or self.capture.mic_device is None:
+            self._log_coach("[dim]no mic device configured; nothing to toggle[/]")
+            return
+        muted = self.capture.toggle_mic()
+        self._log_coach(f"[dim]mic {'muted (listen-only)' if muted else 'live'}[/]")
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id != "ask-input":

@@ -75,17 +75,26 @@ class DualCapture:
         system_device: int | None,
         sample_rate: int = 16000,
         block_ms: int = 100,
+        mic_muted: bool = False,
     ) -> None:
         self.mic_device = mic_device
         self.system_device = system_device
         self.sample_rate = sample_rate
         self.block_size = sample_rate * block_ms // 1000
+        self.mic_muted = mic_muted
         self._streams: list[sd.InputStream] = []
         self._loop: asyncio.AbstractEventLoop | None = None
         self._async_q: asyncio.Queue[AudioChunk] | None = None
 
+    def toggle_mic(self) -> bool:
+        """Flip mic capture on/off at runtime. Returns new muted state."""
+        self.mic_muted = not self.mic_muted
+        return self.mic_muted
+
     def _make_callback(self, speaker: Speaker):
         def cb(indata, _frames, _time, _status):
+            if speaker == "you" and self.mic_muted:
+                return
             loop = self._loop
             q = self._async_q
             if loop is None or q is None or loop.is_closed():

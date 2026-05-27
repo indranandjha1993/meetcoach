@@ -105,6 +105,7 @@ Expected output:
 The Textual TUI opens with two panes — live transcript on the left, Claude coach on the right. Hotkeys:
 
 - `a` — ask Claude an on-demand question about the meeting so far
+- `m` — mute / unmute the mic mid-session (kills mic-bleed when you're listening only; flip back on when you start speaking)
 - `p` — pause / resume the auto coach
 - `c` — clear the coach pane
 - `q` — quit
@@ -141,6 +142,8 @@ For testing with YouTube or any workflow where you don't want your mic captured:
 ```
 
 This avoids the "your mic picks up the meeting playing through your speakers and double-transcribes it" problem.
+
+You can also toggle the mic on/off **mid-session** with the `m` hotkey — useful when you alternate between listening and speaking in the same meeting. (When started with `--no-mic`, no mic stream exists, so `m` is a no-op.)
 
 ### Speaker labels
 
