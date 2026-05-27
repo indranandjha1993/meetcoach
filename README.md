@@ -107,13 +107,27 @@ CLAUDE_BIN=/full/path/to/claude       # if `claude` isn't on PATH
 COACH_MODEL=claude-haiku-4-5          # passed to claude -p --model
 ```
 
-### 5. Install the `/meeting` slash command
+### 5. Install the `/meeting` handler into your LLM tool(s)
 
 ```bash
 ./scripts/install-slash-commands.sh
 ```
 
-This symlinks `share/slash-commands/*.md` into `~/.claude/commands/` so edits to the repo version flow through without re-running the installer.
+Auto-detects which LLM tools you have installed (Claude Code, Cursor, Gemini CLI, Codex CLI) and symlinks the `/meeting` handler into each tool's **on-demand command/skill directory** — never into a project memory file (`CLAUDE.md` / `GEMINI.md` / `.cursorrules` / `AGENTS.md`), so there's no always-loaded context pollution.
+
+Other commands:
+
+```bash
+./scripts/install-slash-commands.sh --list             # show what's detected, don't install
+./scripts/install-slash-commands.sh --platform claude  # install to one specific tool
+./scripts/install-slash-commands.sh --platform cursor  # same, for Cursor
+./scripts/install-slash-commands.sh --platform gemini  # same, for Gemini CLI
+./scripts/install-slash-commands.sh --platform codex   # same, for Codex CLI
+```
+
+Symlinks (not copies), so any edits to `share/skills/meeting/SKILL.md` or `share/slash-commands/meeting.md` flow through everywhere immediately.
+
+See [Using `/meeting` in other LLM tools](#using-meeting-in-other-llm-tools) below for paste-only setups (Antigravity / VS Code Copilot Chat / anything we don't auto-install for).
 
 ### 6. Register the meetcoach MCP server with Claude Code
 
@@ -214,6 +228,39 @@ Claude Code agent (in your project)
 | In a meeting with no specific project context, just want "tell me what's going on" | Path A (TUI) |
 | In a meeting *about* a specific project, want Claude to draft replies using project context | Path B (`/meeting` in that project's `claude` session) |
 | Want both passive monitoring AND project-aware responses | Both — they're independent |
+
+## Using `/meeting` in other LLM tools
+
+The `/meeting` slash command works in any LLM tool that supports MCP. The installer auto-detects four common ones and installs to each:
+
+| Tool | Auto-installed to | Format | Invoked as |
+|---|---|---|---|
+| **Claude Code** | `~/.claude/commands/meeting.md` | Slash command (`.md` with frontmatter) | `/meeting <instruction>` |
+| **Cursor** | `~/.cursor/skills-cursor/meeting/SKILL.md` | Skill | `/meeting <instruction>` |
+| **Gemini CLI** | `~/.gemini/skills/meeting/SKILL.md` | Skill | `/meeting <instruction>` |
+| **Codex CLI** | `~/.codex/skills/meeting/SKILL.md` | Skill | `/meeting <instruction>` |
+
+**Critical:** every install path above is an **on-demand** command/skill directory, never an always-loaded memory file (`CLAUDE.md`, `GEMINI.md`, `.cursorrules`, `AGENTS.md`). Your project's memory stays clean — `/meeting` content only loads when you invoke it.
+
+You still need to **register the meetcoach MCP server** with each tool (see [Setup §6](#6-register-the-meetcoach-mcp-server-with-claude-code) for Claude — same idea for others, but each tool stores MCP server config in its own place):
+
+- **Claude Code**: `~/.claude/settings.json` `mcpServers` block
+- **Cursor**: `~/.cursor/mcp.json` or Settings → MCP Servers
+- **Gemini CLI**: `gemini mcp add meetcoach /full/path/to/meetcoach-mcp`
+- **Codex CLI**: `~/.codex/config.toml` `[mcp_servers.meetcoach]` section
+
+### For tools we don't have an installer for (Antigravity, VS Code Copilot Chat, anything else)
+
+The prompt body is platform-agnostic. Get it with:
+
+```bash
+meetcoach prompt | pbcopy        # copies the prompt body to your clipboard
+meetcoach prompt --raw           # includes the skill frontmatter
+```
+
+Paste it into whatever the tool calls its "custom command" / "instruction" / "skill" mechanism. Then register the MCP server using whatever config that tool uses.
+
+If the tool has no on-demand command mechanism at all, you can paste `meetcoach prompt` content inline whenever you want to invoke the watcher — works, just less ergonomic.
 
 ## Your first meeting
 
@@ -379,7 +426,8 @@ Mapping is first-seen-wins per session and not persisted, so if speakers join in
 
 ```
 meetcoach devices       List input audio devices
-meetcoach doctor        Sanity-check the environment
+meetcoach doctor        Sanity-check the environment (BlackHole, mic, providers, MCP)
+meetcoach prompt        Print the /meeting prompt body to stdout (paste into other LLM tools)
 meetcoach start         Launch the TUI
 
 Common flags for `start`:

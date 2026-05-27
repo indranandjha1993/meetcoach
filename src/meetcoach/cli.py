@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 import click
 from rich.console import Console
@@ -12,10 +13,38 @@ from meetcoach.providers import PROVIDER_CLASSES, detect_available_providers
 
 console = Console()
 
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+PROMPT_BODY_PATH = REPO_ROOT / "share" / "skills" / "meeting" / "SKILL.md"
+
 
 @click.group()
 def cli() -> None:
     """Live meeting transcription + Claude coach."""
+
+
+@cli.command()
+@click.option("--raw", is_flag=True, help="Include frontmatter (skill metadata) in the output.")
+def prompt(raw: bool) -> None:
+    """Print the /meeting prompt to stdout (paste into any LLM tool's commands).
+
+    Useful for platforms we don't ship an installer for, or for piping into
+    your tool's "create command" flow:
+
+        meetcoach prompt | pbcopy
+    """
+    if not PROMPT_BODY_PATH.exists():
+        console.print(f"[red]prompt source missing:[/] {PROMPT_BODY_PATH}")
+        sys.exit(2)
+    text = PROMPT_BODY_PATH.read_text(encoding="utf-8")
+    if raw:
+        click.echo(text)
+        return
+    # Strip the YAML frontmatter if present (between leading "---" pair)
+    if text.startswith("---\n"):
+        end = text.find("\n---\n", 4)
+        if end != -1:
+            text = text[end + 5 :].lstrip()
+    click.echo(text)
 
 
 @cli.command()
