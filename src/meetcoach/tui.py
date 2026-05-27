@@ -500,7 +500,8 @@ class MeetCoachApp(App):
         self._log_coach(f"[dim]{t}[/] {text}")
 
     def _on_ask_reply(self, question: str, reply: str) -> None:
-        self._log_coach(f"[b magenta]Q:[/] {question}")
+        # Q was already echoed when the user pressed Enter in AskModal (in
+        # action_ask). Only log the answer here so we don't duplicate.
         self._log_coach(f"[green]A:[/] {reply}")
         self._log_coach("")
 
