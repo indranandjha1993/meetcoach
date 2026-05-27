@@ -284,10 +284,12 @@ class MeetCoachApp(App):
     }
     RichLog {
         height: 1fr;
-        scrollbar-size-vertical: 1;
-        scrollbar-color: $primary-lighten-2 30%;
-        scrollbar-background: $surface;
-        scrollbar-corner-color: $surface;
+        scrollbar-size-vertical: 0;
+        scrollbar-size-horizontal: 0;
+        background: $surface;
+    }
+    RichLog:focus {
+        background: $surface;
     }
     #ask-row {
         height: 3;
