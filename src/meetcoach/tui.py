@@ -11,7 +11,7 @@ from typing import ClassVar
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.command import DiscoveryHit, Hit, Hits, Provider
-from textual.containers import Container, Horizontal, Vertical, VerticalScroll
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen, Screen
 from textual.widgets import Button, Footer, Header, Input, RichLog, Static
 
@@ -291,13 +291,15 @@ class MeetCoachApp(App):
     RichLog:focus {
         background: $surface;
     }
-    #ask-row {
-        height: 3;
+    #ask-input {
         display: none;
-    }
-    #ask-row.visible {
-        display: block;
+        dock: bottom;
+        height: 3;
         border: solid $accent;
+        background: $surface;
+    }
+    #ask-input.visible {
+        display: block;
     }
     """
 
@@ -337,8 +339,10 @@ class MeetCoachApp(App):
             with Vertical(id="coach-pane"):
                 yield Static("[b]Coach[/]", classes="pane-title")
                 yield RichLog(id="coach-log", wrap=True, highlight=False, markup=True)
-        with Container(id="ask-row"):
-            yield Input(placeholder="Ask Claude about the meeting... (Enter to send, Esc to cancel)", id="ask-input")
+        yield Input(
+            placeholder="Ask the coach about the meeting... (Enter to send, Esc to cancel)",
+            id="ask-input",
+        )
         yield Footer()
 
     async def on_mount(self) -> None:
@@ -614,9 +618,8 @@ class MeetCoachApp(App):
         self._refresh_capbar()
 
     def action_ask(self) -> None:
-        row = self.query_one("#ask-row", Container)
-        row.add_class("visible")
         inp = self.query_one("#ask-input", Input)
+        inp.add_class("visible")
         inp.value = ""
         inp.focus()
 
@@ -640,16 +643,18 @@ class MeetCoachApp(App):
         if event.input.id != "ask-input":
             return
         question = event.value.strip()
-        self.query_one("#ask-row", Container).remove_class("visible")
+        event.input.remove_class("visible")
+        event.input.value = ""
         if question and self.coach:
             self._log_coach("[dim]asking...[/]")
             self._spawn(self.coach.ask(question))
 
     def on_key(self, event) -> None:
         if event.key == "escape":
-            row = self.query_one("#ask-row", Container)
-            if row.has_class("visible"):
-                row.remove_class("visible")
+            inp = self.query_one("#ask-input", Input)
+            if inp.has_class("visible"):
+                inp.remove_class("visible")
+                inp.value = ""
 
     async def on_unmount(self) -> None:
         import contextlib
