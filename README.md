@@ -408,12 +408,17 @@ Claude reads the file and answers. No live polling, just one-shot reference.
 .venv/bin/meetcoach start
 ```
 
-The Textual TUI opens with two panes — live transcript on the left, Claude coach on the right. Hotkeys:
+The Textual TUI opens with a status bar at the top, two panes, and a footer. The status bar shows live indicators for each capability group (Audio / STT / Coach / MCP) — green dot = working, red dot = broken, yellow = degraded, grey = disabled.
+
+If anything is broken at launch (e.g., missing Deepgram key, MCP not registered), a **readiness modal** pops up listing each problem with copy-paste fix instructions. Pick `Continue anyway`, `Show full status`, or `Quit`.
+
+Hotkeys:
 
 - `a` — ask Claude an on-demand question about the meeting so far
 - `m` — mute / unmute the mic mid-session
 - `p` — pause / resume the auto coach
 - `c` — clear the coach pane
+- `?` — show full status detail (every capability with state + fix steps)
 - `q` — quit
 
 The active session's transcript is saved to `transcripts/meeting-<timestamp>.txt` and a stable symlink at `~/.meetcoach/current.txt` is repointed to it on every launch.

@@ -1,28 +1,176 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from typing import ClassVar
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Container, Horizontal, Vertical
-from textual.widgets import Footer, Header, Input, RichLog, Static
+from textual.containers import Container, Horizontal, Vertical, VerticalScroll
+from textual.screen import ModalScreen, Screen
+from textual.widgets import Button, Footer, Header, Input, RichLog, Static
 
 from meetcoach.audio import DualCapture
+from meetcoach.capabilities import (
+    Capability,
+    CapabilityState,
+    broken_capabilities,
+    check_all,
+    group_by,
+)
 from meetcoach.coach import Coach
 from meetcoach.config import Settings
 from meetcoach.stt import DeepgramTranscriber, Transcriber, TranscriptEvent, WhisperTranscriber
+
+_GROUP_TITLES = {
+    "audio": "Audio",
+    "transcription": "STT",
+    "coach": "Coach",
+    "mcp": "MCP",
+    "slash-commands": "/meeting",
+}
+
+_STATE_COLOR = {
+    CapabilityState.OK: "green",
+    CapabilityState.DEGRADED: "yellow",
+    CapabilityState.BROKEN: "red",
+    CapabilityState.DISABLED: "grey50",
+}
+
+_STATE_GLYPH = {
+    CapabilityState.OK: "✓",
+    CapabilityState.DEGRADED: "!",
+    CapabilityState.BROKEN: "✗",
+    CapabilityState.DISABLED: "-",
+}
+
+
+def _worst_state(caps: list[Capability]) -> CapabilityState:
+    """Aggregate the worst state across a group (BROKEN > DEGRADED > DISABLED > OK)."""
+    order = [CapabilityState.BROKEN, CapabilityState.DEGRADED, CapabilityState.OK, CapabilityState.DISABLED]
+    states = {c.state for c in caps}
+    for s in order:
+        if s in states:
+            return s
+    return CapabilityState.OK
 
 
 class StatusBar(Static):
     pass
 
 
+class CapabilityBar(Static):
+    """One-line status bar: colored dot per capability group + recording info."""
+
+    def render_caps(self, caps: list[Capability], recording_path: str | None) -> None:
+        groups = group_by(caps)
+        parts = []
+        for grp in ("audio", "transcription", "coach", "mcp"):
+            items = [c for c in groups.get(grp, []) if c.state != CapabilityState.DISABLED]
+            state = _worst_state(items) if items else CapabilityState.DISABLED
+            color = _STATE_COLOR[state]
+            label = _GROUP_TITLES[grp]
+            parts.append(f"[{color}]●[/] {label}")
+        line = "   ".join(parts)
+        if recording_path:
+            line += f"   [dim]│   rec → {recording_path}[/]"
+        line += "   [dim]│   [?] details[/]"
+        self.update(line)
+
+
+class ReadinessModal(ModalScreen[str]):
+    """Shown on startup if any capability is BROKEN. User picks: continue / detail / quit."""
+
+    CSS = """
+    ReadinessModal { align: center middle; }
+    #modal-body {
+        width: 80%; max-width: 100; height: auto; max-height: 80%;
+        background: $panel; border: round $warning; padding: 1 2;
+    }
+    #modal-body Static.problem-name { color: $error; padding-top: 1; }
+    #modal-body Static.problem-detail { color: $text-muted; padding-left: 2; }
+    #modal-body Static.problem-step { color: $secondary; padding-left: 4; }
+    #modal-buttons { height: auto; align-horizontal: center; padding-top: 1; }
+    #modal-buttons Button { margin: 0 1; }
+    """
+
+    def __init__(self, broken: list[Capability]) -> None:
+        super().__init__()
+        self.broken = broken
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll(id="modal-body"):
+            yield Static(
+                f"[bold yellow]{len(self.broken)} capabilit"
+                f"{'y' if len(self.broken) == 1 else 'ies'} need"
+                f"{'s' if len(self.broken) == 1 else ''} attention[/]"
+            )
+            yield Static("")
+            for c in self.broken:
+                yield Static(f"✗ [bold]{c.name}[/]", classes="problem-name")
+                yield Static(c.detail, classes="problem-detail")
+                if c.fix_steps:
+                    yield Static("To fix:", classes="problem-detail")
+                    for step in c.fix_steps:
+                        yield Static(step, classes="problem-step")
+            yield Static("")
+            with Horizontal(id="modal-buttons"):
+                yield Button("Continue anyway", id="continue", variant="warning")
+                yield Button("Show full status", id="detail")
+                yield Button("Quit", id="quit", variant="error")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss(event.button.id or "continue")
+
+
+class CapabilityDetailScreen(Screen):
+    """Toggleable full breakdown of every capability, with state + detail + fix steps."""
+
+    BINDINGS: ClassVar = [Binding("escape", "dismiss", "Close"), Binding("question_mark", "dismiss", "Close")]
+
+    CSS = """
+    CapabilityDetailScreen { layout: vertical; }
+    #detail-body { padding: 1 2; }
+    #detail-body Static.group-title { color: $accent; padding-top: 1; }
+    #detail-body Static.cap-line { padding-left: 2; }
+    #detail-body Static.cap-fix { color: $secondary; padding-left: 6; }
+    #detail-footer { dock: bottom; height: 1; background: $boost; padding: 0 1; }
+    """
+
+    def __init__(self, caps: list[Capability]) -> None:
+        super().__init__()
+        self.caps = caps
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        with VerticalScroll(id="detail-body"):
+            for grp, title in _GROUP_TITLES.items():
+                items = group_by(self.caps).get(grp, [])
+                if not items:
+                    continue
+                yield Static(f"[bold]{title}[/]", classes="group-title")
+                for c in items:
+                    glyph = _STATE_GLYPH[c.state]
+                    color = _STATE_COLOR[c.state]
+                    yield Static(
+                        f"[{color}]{glyph}[/] {c.name:38s}  [dim]{c.detail}[/]",
+                        classes="cap-line",
+                    )
+                    if c.fix_steps and c.state != CapabilityState.OK:
+                        for step in c.fix_steps:
+                            yield Static(step, classes="cap-fix")
+        yield Static("[dim]Press Esc or ? to close[/]", id="detail-footer")
+
+    def action_dismiss(self) -> None:
+        self.app.pop_screen()
+
+
 class MeetCoachApp(App):
     CSS = """
     Screen { layout: vertical; }
-    #status { height: 1; background: $boost; color: $text; padding: 0 1; }
+    #capbar { height: 1; background: $boost; color: $text; padding: 0 1; }
+    #status { height: 1; background: $boost; color: $text-muted; padding: 0 1; }
     #panes { height: 1fr; }
     #transcript-pane { width: 60%; border: solid $accent; padding: 0 1; }
     #coach-pane { width: 40%; border: solid $success; padding: 0 1; }
@@ -37,6 +185,7 @@ class MeetCoachApp(App):
         Binding("m", "toggle_mic", "Mute mic"),
         Binding("p", "toggle_pause", "Pause coach"),
         Binding("c", "clear_coach", "Clear coach pane"),
+        Binding("question_mark", "show_detail", "Status detail"),
         Binding("q", "quit", "Quit"),
     ]
 
@@ -53,6 +202,7 @@ class MeetCoachApp(App):
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
+        yield CapabilityBar("checking capabilities...", id="capbar")
         yield StatusBar("starting...", id="status")
         with Horizontal(id="panes"):
             with Vertical(id="transcript-pane"):
@@ -66,7 +216,24 @@ class MeetCoachApp(App):
         yield Footer()
 
     async def on_mount(self) -> None:
-        self.set_status(f"engine={self.settings.resolve_engine()} | mic={self.settings.mic_device} | system={self.settings.system_device}")
+        # Run the full capability scan once; show modal if anything is broken.
+        caps = check_all(self.settings)
+        self._refresh_capbar(caps)
+        broken = broken_capabilities(caps)
+        if broken:
+            choice = await self.push_screen_wait(ReadinessModal(broken))
+            if choice == "quit":
+                self.exit()
+                return
+            if choice == "detail":
+                await self.push_screen_wait(CapabilityDetailScreen(caps))
+
+        # Refresh the cap bar every 5s so post-launch fixes show up live.
+        self.set_interval(5.0, self._tick_caps)
+
+        self.set_status(
+            f"engine={self.settings.resolve_engine()} | mic={self.settings.mic_device} | system={self.settings.system_device}"
+        )
         try:
             await self._start_pipeline()
         except Exception as e:
@@ -171,6 +338,20 @@ class MeetCoachApp(App):
 
     def set_status(self, text: str) -> None:
         self.query_one("#status", StatusBar).update(text)
+
+    def _refresh_capbar(self, caps: list[Capability] | None = None) -> None:
+        if caps is None:
+            caps = check_all(self.settings)
+        rec = self.coach.transcript_path.name if (self.coach and self.coach.transcript_path) else None
+        with contextlib.suppress(Exception):
+            self.query_one("#capbar", CapabilityBar).render_caps(caps, rec)
+
+    def _tick_caps(self) -> None:
+        self._refresh_capbar()
+
+    def action_show_detail(self) -> None:
+        caps = check_all(self.settings)
+        self.push_screen(CapabilityDetailScreen(caps))
 
     def action_ask(self) -> None:
         row = self.query_one("#ask-row", Container)

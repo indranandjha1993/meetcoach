@@ -8,8 +8,9 @@ from rich.console import Console
 from rich.table import Table
 
 from meetcoach.audio import find_blackhole, find_default_mic, find_device, list_devices
+from meetcoach.capabilities import CapabilityState, broken_capabilities, check_all, group_by
 from meetcoach.config import Settings
-from meetcoach.providers import PROVIDER_CLASSES, detect_available_providers
+from meetcoach.providers import PROVIDER_CLASSES
 
 console = Console()
 
@@ -65,75 +66,54 @@ def devices() -> None:
     console.print(table)
 
 
-@cli.command()
-def doctor() -> None:
-    """Sanity-check the environment."""
+_STATE_GLYPH = {
+    CapabilityState.OK: "[green]✓[/]",
+    CapabilityState.DEGRADED: "[yellow]![/]",
+    CapabilityState.BROKEN: "[red]✗[/]",
+    CapabilityState.DISABLED: "[dim]-[/]",
+}
+
+_GROUP_TITLES = {
+    "audio": "Audio",
+    "transcription": "Transcription",
+    "coach": "Coach LLM provider",
+    "mcp": "MCP server",
+    "slash-commands": "/meeting handler",
+}
+
+
+def _render_capabilities(verbose: bool = False) -> bool:
+    """Print check_all() results as a grouped table. Returns False if anything broken."""
     settings = Settings()
-    ok = True
+    caps = check_all(settings)
+    grouped = group_by(caps)
+    for group, title in _GROUP_TITLES.items():
+        items = grouped.get(group, [])
+        if not items:
+            continue
+        console.print(f"[bold]{title}[/]")
+        for c in items:
+            glyph = _STATE_GLYPH[c.state]
+            console.print(f"  {glyph} {c.name:36s}  [dim]{c.detail}[/]")
+            if verbose and c.fix_steps and c.state != CapabilityState.OK:
+                for step in c.fix_steps:
+                    console.print(f"        [cyan]{step}[/]")
+        console.print()
 
-    bh = find_blackhole()
-    if bh is None:
-        console.print("[red]✗[/] BlackHole not found. Install: brew install blackhole-2ch")
-        console.print("  Then in Audio MIDI Setup, create a Multi-Output Device that includes")
-        console.print("  both your speakers and BlackHole 2ch, and set Zoom/Meet/Teams output to it.")
-        ok = False
-    else:
-        console.print(f"[green]✓[/] BlackHole found at device index {bh}")
-
-    mic = find_default_mic()
-    if mic is None:
-        console.print("[red]✗[/] No default input mic detected.")
-        ok = False
-    else:
-        console.print(f"[green]✓[/] Default mic at device index {mic}")
-
-    console.print("[bold]Coach providers:[/]")
-    any_provider_available = False
-    for name, available, path in detect_available_providers():
-        cls = PROVIDER_CLASSES[name]
-        if available:
-            mark = "[green]✓[/]"
-            console.print(f"  {mark} {name:8s} {path}")
-            any_provider_available = True
-        else:
-            mark = "[yellow]-[/]"
-            console.print(f"  {mark} {name:8s} (install: {cls.install_hint})")
-    if not any_provider_available:
-        console.print("[red]✗[/] No coach providers available — install at least one")
-        ok = False
-    preferred = settings.coach_provider
-    pref_cls = PROVIDER_CLASSES.get(preferred)
-    if pref_cls is None:
+    broken = broken_capabilities(caps)
+    if broken and not verbose:
         console.print(
-            f"[red]✗[/] Configured coach_provider={preferred!r} is not a known provider. "
-            f"Pick one of: {', '.join(PROVIDER_CLASSES.keys())}"
+            f"[yellow]{len(broken)} item(s) need attention.[/] "
+            f"Run `meetcoach doctor --verbose` for fix instructions."
         )
-        ok = False
-    elif not pref_cls.is_available(settings.coach_bin):
-        console.print(
-            f"[red]✗[/] Configured coach_provider={preferred!r} but its CLI isn't installed."
-        )
-        ok = False
-    else:
-        console.print(f"[green]✓[/] Active coach provider: {preferred}")
+    return not broken
 
-    engine = settings.resolve_engine()
-    if engine == "deepgram":
-        console.print("[green]✓[/] DEEPGRAM_API_KEY set — using Deepgram streaming STT")
-    else:
-        console.print(
-            "[yellow]![/] No DEEPGRAM_API_KEY — will use local faster-whisper "
-            "(install with: pip install 'meetcoach[whisper]')"
-        )
-        try:
-            import faster_whisper  # noqa: F401
-            import webrtcvad  # noqa: F401
 
-            console.print("[green]✓[/] faster-whisper + webrtcvad installed")
-        except ImportError as e:
-            console.print(f"[red]✗[/] whisper backend missing: {e}")
-            ok = False
-
+@cli.command()
+@click.option("-v", "--verbose", is_flag=True, help="Show fix instructions for any broken items.")
+def doctor(verbose: bool) -> None:
+    """Sanity-check the environment — audio, STT, coach providers, MCP, slash commands."""
+    ok = _render_capabilities(verbose=verbose)
     sys.exit(0 if ok else 1)
 
 
@@ -210,30 +190,29 @@ def start(
     mic_idx = None if no_mic else (find_device(mic) if mic else find_default_mic())
     sys_idx = None if no_system else (find_device(system) if system else find_blackhole())
 
+    # Only one hard-exit condition: zero audio devices. Without it the TUI
+    # has literally nothing to capture. Everything else (missing Deepgram
+    # key, missing coach CLI, missing Whisper deps, missing MCP registration)
+    # becomes a soft warning here and a red indicator in the TUI status
+    # panel + readiness modal — so the user can fix it without restarting.
     if mic_idx is None and sys_idx is None:
-        console.print("[red]No audio sources resolved.[/] Run `meetcoach doctor` for help.")
+        console.print(
+            "[red]✗ No audio sources resolved.[/] "
+            "Run `meetcoach doctor` for diagnostic details."
+        )
         sys.exit(2)
     if sys_idx is None and not no_system:
         console.print(
-            "[yellow]No BlackHole device found — capturing mic only. "
-            "Pass --no-system to silence this warning, or install BlackHole.[/]"
+            "[yellow]! No BlackHole device found — capturing mic only.[/] "
+            "Pass --no-system to silence, or install BlackHole via `make audio-setup`."
         )
 
-    # Fail fast if the chosen provider's CLI is missing — better than silently
-    # starting and only seeing errors in the coach pane every 25s.
     settings_defaults = Settings()
     chosen_provider = coach_provider or settings_defaults.coach_provider
-    provider_cls = PROVIDER_CLASSES.get(chosen_provider)
-    if provider_cls is None:
+    if chosen_provider not in PROVIDER_CLASSES:
         console.print(
-            f"[red]Unknown coach provider: {chosen_provider!r}.[/] "
+            f"[red]✗ Unknown coach provider: {chosen_provider!r}.[/] "
             f"Available: {', '.join(PROVIDER_CLASSES)}"
-        )
-        sys.exit(2)
-    if not provider_cls.is_available(coach_bin):
-        console.print(
-            f"[red]Coach provider '{chosen_provider}' CLI not found.[/] "
-            f"Install: {provider_cls.install_hint}"
         )
         sys.exit(2)
 
@@ -251,65 +230,25 @@ def start(
         names=name_list,
     )
 
-    _validate_stt_engine(settings)
+    # Pre-check capabilities and surface any problems before the TUI opens —
+    # but DON'T exit. The TUI's startup-readiness modal will show the same
+    # info with actionable fix steps; this is just for users who scrolled
+    # past the modal too fast or have a non-interactive terminal.
+    caps = check_all(settings)
+    broken = broken_capabilities(caps)
+    if broken:
+        console.print(
+            f"[yellow]! {len(broken)} capability/capabilities need attention "
+            "(meetcoach will open anyway):[/]"
+        )
+        for c in broken:
+            console.print(f"  [red]✗[/] {c.name} — {c.detail}")
+        console.print(
+            "  Run `meetcoach doctor --verbose` for fix instructions, "
+            "or address them from the TUI status panel."
+        )
 
     MeetCoachApp(settings).run()
-
-
-def _validate_stt_engine(settings: Settings) -> None:
-    """Fail fast with actionable setup instructions if the STT engine isn't ready.
-
-    Runs before the TUI opens so any error lands in the terminal where the
-    user can read and act on it, instead of flashing in the coach pane.
-    """
-    engine = settings.resolve_engine()
-    if engine == "deepgram":
-        if settings.deepgram_key:
-            return
-        console.print("[red]✗ Deepgram API key not configured.[/]\n")
-        console.print("  meetcoach uses Deepgram for live transcription. To set up:\n")
-        console.print(
-            "  1. Get a free API key at https://deepgram.com "
-            "(free $200 credit, ~750 hours)"
-        )
-        console.print("  2. Copy the example env file:")
-        console.print("       [cyan]cp .env.example .env[/]")
-        console.print("  3. Open .env and paste your key:")
-        console.print("       [cyan]DEEPGRAM_API_KEY=your_key_here[/]")
-        console.print("  4. Re-run: [cyan]meetcoach start[/]\n")
-        console.print(
-            "  Don't have / want a Deepgram account? Run with local Whisper "
-            "(no key, lower accuracy, no diarization):"
-        )
-        console.print("       [cyan]meetcoach start --engine whisper[/]")
-        sys.exit(2)
-
-    if engine == "whisper":
-        missing = []
-        try:
-            import faster_whisper  # noqa: F401
-        except ImportError:
-            missing.append("faster-whisper")
-        try:
-            import webrtcvad  # noqa: F401
-        except ImportError:
-            missing.append("webrtcvad")
-        if not missing:
-            return
-        console.print(f"[red]✗ Whisper backend missing: {', '.join(missing)}[/]\n")
-        console.print("  To install the local Whisper backend:")
-        console.print(r"       [cyan]uv pip install 'meetcoach\[whisper]'[/]" + "\n")
-        console.print(
-            "  Or use Deepgram (cloud, higher accuracy, free $200 credit) by setting "
-            "DEEPGRAM_API_KEY in .env."
-        )
-        sys.exit(2)
-
-    console.print(
-        f"[red]Unknown STT engine: {engine!r}.[/] "
-        "Use --engine auto|deepgram|whisper."
-    )
-    sys.exit(2)
 
 
 if __name__ == "__main__":
