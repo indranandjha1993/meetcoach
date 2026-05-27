@@ -138,6 +138,44 @@ class ReadinessModal(ModalScreen[str]):
         self.dismiss(event.button.id or "continue")
 
 
+class AskModal(ModalScreen[str | None]):
+    """Centered modal for asking the coach a question (replaces the inline
+    bottom-bar Input — clearer focus, dismissable with Esc, matches the
+    readiness-modal pattern already used in this app)."""
+
+    BINDINGS: ClassVar = [Binding("escape", "cancel", "Cancel")]
+
+    CSS = """
+    AskModal { align: center middle; }
+    #ask-modal {
+        width: 80%; max-width: 100; height: auto;
+        background: $panel; border: round $accent; padding: 1 2;
+    }
+    #ask-modal-title { text-style: bold; color: $accent; padding-bottom: 1; }
+    #ask-modal-input { border: solid $primary; }
+    #ask-modal-hint { color: $text-muted; padding-top: 1; text-align: center; }
+    """
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="ask-modal"):
+            yield Static("Ask the coach", id="ask-modal-title")
+            yield Input(
+                placeholder="What do you want to know about the meeting?",
+                id="ask-modal-input",
+            )
+            yield Static("[dim]Enter to send  ·  Esc to cancel[/]", id="ask-modal-hint")
+
+    def on_mount(self) -> None:
+        self.query_one("#ask-modal-input", Input).focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        question = event.value.strip()
+        self.dismiss(question or None)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
 class CapabilityDetailScreen(Screen):
     """Toggleable full breakdown of every capability, with state + detail + fix steps."""
 
@@ -291,16 +329,6 @@ class MeetCoachApp(App):
     RichLog:focus {
         background: $surface;
     }
-    #ask-input {
-        display: none;
-        dock: bottom;
-        height: 3;
-        border: solid $accent;
-        background: $surface;
-    }
-    #ask-input.visible {
-        display: block;
-    }
     """
 
     BINDINGS: ClassVar = [
@@ -339,10 +367,6 @@ class MeetCoachApp(App):
             with Vertical(id="coach-pane"):
                 yield Static("[b]Coach[/]", classes="pane-title")
                 yield RichLog(id="coach-log", wrap=True, highlight=False, markup=True)
-        yield Input(
-            placeholder="Ask the coach about the meeting... (Enter to send, Esc to cancel)",
-            id="ask-input",
-        )
         yield Footer()
 
     async def on_mount(self) -> None:
@@ -618,10 +642,12 @@ class MeetCoachApp(App):
         self._refresh_capbar()
 
     def action_ask(self) -> None:
-        inp = self.query_one("#ask-input", Input)
-        inp.add_class("visible")
-        inp.value = ""
-        inp.focus()
+        def on_question(question: str | None) -> None:
+            if not question or not self.coach:
+                return
+            self._log_coach(f"[dim]Q:[/] [italic]{question}[/]")
+            self._spawn(self.coach.ask(question))
+        self.push_screen(AskModal(), on_question)
 
     def action_clear_coach(self) -> None:
         self.query_one("#coach-log", RichLog).clear()
@@ -639,22 +665,7 @@ class MeetCoachApp(App):
         muted = self.capture.toggle_mic()
         self._log_coach(f"[dim]mic {'muted (listen-only)' if muted else 'live'}[/]")
 
-    async def on_input_submitted(self, event: Input.Submitted) -> None:
-        if event.input.id != "ask-input":
-            return
-        question = event.value.strip()
-        event.input.remove_class("visible")
-        event.input.value = ""
-        if question and self.coach:
-            self._log_coach("[dim]asking...[/]")
-            self._spawn(self.coach.ask(question))
-
-    def on_key(self, event) -> None:
-        if event.key == "escape":
-            inp = self.query_one("#ask-input", Input)
-            if inp.has_class("visible"):
-                inp.remove_class("visible")
-                inp.value = ""
+    # Ask input is now handled by AskModal; no inline submit handler needed.
 
     async def on_unmount(self) -> None:
         import contextlib
