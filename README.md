@@ -79,7 +79,26 @@ COACH_MODEL=claude-haiku-4-5          # passed to claude -p --model
 
 This symlinks `share/slash-commands/*.md` into `~/.claude/commands/` so edits to the repo version flow through without re-running the installer.
 
-### 6. Verify everything
+### 6. Register the meetcoach MCP server with Claude Code
+
+The slash command uses an MCP server (`meetcoach-mcp`) to subscribe to the live transcript — server-side blocking calls instead of agent-side `sleep` polling. One quiet tool call per cycle in your Claude Code chat instead of a wall of `Bash(sleep 15...)` blocks.
+
+Register it once in `~/.claude/settings.json` (or any project's `.mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "meetcoach": {
+      "command": "/Users/indranandjha/Developer/personal/meetcoach/.venv/bin/meetcoach-mcp",
+      "args": []
+    }
+  }
+}
+```
+
+Adjust the absolute path to your clone. Restart `claude` after editing. Verify by running `claude mcp list` — `meetcoach` should appear.
+
+### 7. Verify everything
 
 ```bash
 .venv/bin/meetcoach doctor
@@ -203,14 +222,14 @@ Common flags for `start`:
                        │
         Transcript log  +  ~/.meetcoach/current.txt
                        │
-       ┌───────────────┴───────────────┐
-       ▼                               ▼
-   TUI (left/right panes)     /meeting slash command
-       │                               │
-   Coach pane                  Claude in your project
-       ▲                               ▲
-       └── claude -p subprocess ───────┘
-           (rolling transcript + instruction prompt)
+       ┌───────────────┼─────────────────────────────────┐
+       ▼               ▼                                 ▼
+   TUI panes      claude -p subprocess        meetcoach-mcp (MCP server)
+       │          (auto coach in TUI)                    │
+   Coach pane                                  /meeting slash command
+                                              in Claude in your project
+                                              (wait_for_new_lines blocks
+                                               server-side; no polling)
 ```
 
 **Why Nova-3 streaming with raw websockets instead of the SDK?** Deepgram recommends Nova-3 specifically for multi-speaker meeting transcription (better noise/crosstalk robustness than the Flux conversational model), and `diarize=true` gives us per-speaker IDs out of the box. We talk to the v1 listen endpoint directly because the `deepgram-sdk`'s `nova-3 language=multi` path hangs silently on connect — bug in the Python SDK, not the API itself.

@@ -1,6 +1,6 @@
 ---
 description: Watch the live meetcoach transcript and respond per the user's instruction
-allowed-tools: Bash, Read
+allowed-tools: mcp__meetcoach__get_state, mcp__meetcoach__read_transcript, mcp__meetcoach__wait_for_new_lines, Bash, Read
 argument-hint: "<your instruction for when/how to respond>"
 ---
 
@@ -12,11 +12,11 @@ $ARGUMENTS
 
 ## The transcript
 
-The live transcript is at `~/.meetcoach/current.txt`. It's updated by `meetcoach` (running in another terminal) as the meeting progresses — new lines are appended as each speaker finishes an utterance. Each line is formatted like `[HH:MM:SS] <Label>: <text>` where `<Label>` is one of:
+The live transcript is exposed by the **meetcoach MCP server**. Each line in the transcript represents one completed utterance (one speaker finishing a sentence/turn), formatted like `[HH:MM:SS] <Label>: <text>` where `<Label>` is:
 
 - The user's configured mic label (default `You`, or whatever they passed to `--mic-label`)
-- A real name like `Vinay` / `Priya` if they pre-mapped remote speakers via `--names`
-- A fallback `Speaker-0` / `Speaker-1` / `Speaker-N` when no name was supplied for that speaker
+- A real name like `Vinay` / `Priya` if remote speakers were pre-mapped via `--names`
+- A fallback `Speaker-0` / `Speaker-1` / `Speaker-N` otherwise
 
 So a multi-speaker standup might look like:
 
@@ -28,27 +28,28 @@ So a multi-speaker standup might look like:
 
 When responding, refer to people by the label as it appears in the transcript.
 
-If the file doesn't exist or is empty, meetcoach isn't running yet. Tell the user that once, then exit — don't loop on an empty file.
+## How to watch (via MCP, not polling)
 
-## How to watch
+1. Call `mcp__meetcoach__get_state`.
+   - If `available: false`, meetcoach isn't running. Tell the user once ("meetcoach isn't running — start it in another terminal") and exit. **Don't loop on a missing file.**
 
-1. Read the transcript so far with `cat ~/.meetcoach/current.txt`. This is your baseline context — apply the user's instruction to it now and respond if anything already matches.
+2. Call `mcp__meetcoach__read_transcript` (no args) to get the baseline context. Remember the returned `total_lines` as `N`.
+   - Apply the user's instruction to the baseline content. Respond if anything already matches. Otherwise stay silent.
 
-2. Note the current line count: `wc -l < ~/.meetcoach/current.txt | tr -d ' '`. Remember this as `N`.
-
-3. Enter a watch loop. On each iteration:
-   - `sleep 15`
-   - `tail -n +$((N+1)) ~/.meetcoach/current.txt` — this fetches any lines added since the last check.
-   - If empty, continue. Don't say anything. Don't tell the user "still watching." Don't acknowledge silence.
-   - If non-empty, update `N` to the new total (`wc -l < ~/.meetcoach/current.txt | tr -d ' '`), evaluate the new content against the user's instruction, and:
+3. Enter the watch loop. On each iteration:
+   - Call `mcp__meetcoach__wait_for_new_lines(since_index=N, timeout_s=60)`. The server **blocks** until new transcript lines arrive or 60s elapses — no `sleep` from you.
+   - If `lines` is empty (timeout, no new content), just loop again. Stay completely silent. No "still watching" messages.
+   - If `lines` is non-empty:
+     - Set `N = new_index` for the next call.
+     - Evaluate the new lines against the user's instruction.
      - If the criteria match: respond to the user concisely. Address them directly. Quote the trigger line if useful.
      - If not: stay completely silent. No "PASS", no "nothing relevant", no acknowledgement.
 
-4. Loop indefinitely. The user will Ctrl+C when the meeting ends, or tell you to stop.
+4. Loop indefinitely until the user interrupts (Ctrl+C) or says "stop".
 
 ## Project context for judging "relevance"
 
-You are running inside the user's current project. If their instruction mentions "the project" or "relevant to my work," use the project's `CLAUDE.md` (if present in the cwd or any parent), recent files, and surrounding code to decide what matters. Be strict — when in doubt, stay silent. The user can always loosen by re-invoking with different criteria.
+You are running inside the user's current project. If their instruction mentions "the project" or "relevant to my work," use the project's `CLAUDE.md` (loaded automatically), recent files, and surrounding code to decide what matters. Be strict — when in doubt, stay silent. The user can always loosen criteria by re-invoking.
 
 ## Tone when you do respond
 
@@ -56,4 +57,4 @@ Short. Direct. Useful. No preamble, no "Based on the transcript…" — just the
 
 ## Start now
 
-Begin with the baseline read, then enter the watch loop.
+Call `mcp__meetcoach__get_state`, then `mcp__meetcoach__read_transcript`, then enter the loop.
