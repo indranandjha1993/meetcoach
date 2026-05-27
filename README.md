@@ -19,29 +19,38 @@ You don't want this if:
 
 ## Two-minute quick start
 
-If you already have a fresh Mac with Homebrew, `uv`, the Claude CLI, and a Deepgram key:
+If you have Homebrew, `uv`, an LLM CLI (Claude / Gemini / Codex), and a Deepgram key:
 
 ```bash
 git clone https://github.com/indranandjha1993/meetcoach.git
 cd meetcoach
-uv venv --python 3.13 && uv pip install -e .
-brew install --cask blackhole-2ch && sudo killall coreaudiod
-cp .env.example .env       # then paste your DEEPGRAM_API_KEY into it
-./scripts/install-slash-commands.sh
+make setup            # installs deps + BlackHole + slash commands; prints next steps
 ```
 
-Then do the **two manual steps** that can't be scripted:
+Then do the **two manual steps** the installer can't script:
 
-1. **Audio MIDI Setup → Multi-Output Device** with your headphones/speakers + BlackHole. Set it as your System Settings → Sound output. (Detailed walkthrough in [Setup §3](#3-create-a-multi-output-device) below.)
-2. **Edit `~/.claude/settings.json`** to register the meetcoach MCP server. (See [Setup §6](#6-register-the-meetcoach-mcp-server-with-claude-code).)
+1. **Audio MIDI Setup → Multi-Output Device** with your headphones/speakers + BlackHole. Set it as your System Settings → Sound output. ([Detailed walkthrough below](#3-create-a-multi-output-device).)
+2. **Edit `~/.claude/settings.json`** (or your tool's MCP config) to register the meetcoach MCP server:
+   ```bash
+   make register-mcp     # prints the JSON snippet to paste
+   ```
 
-Verify:
-
+And paste your Deepgram key:
 ```bash
-.venv/bin/meetcoach doctor
+cp .env.example .env       # then put DEEPGRAM_API_KEY=... in it
 ```
 
-You're ready. Jump to [Your first meeting](#your-first-meeting).
+Verify and start:
+```bash
+make doctor
+make start                 # or `make listen` for solo audio (no mic)
+```
+
+`make` (with no arguments) lists every command — `setup`, `start`, `listen`, `doctor`, `register-mcp`, `prompt`, `lint`, `clean`, `update`, etc.
+
+Jump to [Your first meeting](#your-first-meeting) for the end-to-end walkthrough.
+
+> **Linux / WSL:** the Makefile is cross-platform but live audio capture isn't yet — BlackHole is macOS-only. `make install`, `make slash-commands`, `make doctor` (without audio devices), and the MCP server / `/meeting` slash command in your LLM tool all work on Linux today. Live transcription needs a PulseAudio/PipeWire backend that's planned but not yet shipped.
 
 ## Requirements
 
@@ -53,24 +62,24 @@ You're ready. Jump to [Your first meeting](#your-first-meeting).
 
 ## Setup on a fresh Mac
 
+For most users, `make setup` runs steps 1, 2, and 5 in one shot. The detailed walkthrough below is for understanding what's happening, and for steps that can't be automated (the Multi-Output Device GUI in §3, the API key in §4, and the MCP server registration in §6).
+
 ### 1. Clone and install Python deps
 
 ```bash
 git clone https://github.com/indranandjha1993/meetcoach.git
 cd meetcoach
-uv venv --python 3.13
-uv pip install -e .
+make install                  # or: uv venv --python 3.13 && uv pip install -e .
 ```
 
 (SSH users: `git clone git@github.com:indranandjha1993/meetcoach.git`.)
 
 ### 2. Install BlackHole
 
-BlackHole is a kernel-level virtual audio driver that lets us capture system audio. It needs admin password during install.
+BlackHole is a kernel-level virtual audio driver that lets us capture system audio. Install needs an admin password.
 
 ```bash
-brew install --cask blackhole-2ch
-sudo killall coreaudiod     # makes the driver visible without rebooting
+make audio-setup              # or: brew install --cask blackhole-2ch && sudo killall coreaudiod
 ```
 
 ### 3. Create a Multi-Output Device
@@ -110,7 +119,7 @@ COACH_MODEL=claude-haiku-4-5          # passed to claude -p --model
 ### 5. Install the `/meeting` handler into your LLM tool(s)
 
 ```bash
-./scripts/install-slash-commands.sh
+make slash-commands           # or: ./scripts/install-slash-commands.sh
 ```
 
 Auto-detects which LLM tools you have installed (Claude Code, Cursor, Gemini CLI, Codex CLI) and symlinks the `/meeting` handler into each tool's **on-demand command/skill directory** — never into a project memory file (`CLAUDE.md` / `GEMINI.md` / `.cursorrules` / `AGENTS.md`), so there's no always-loaded context pollution.
@@ -133,25 +142,31 @@ See [Using `/meeting` in other LLM tools](#using-meeting-in-other-llm-tools) bel
 
 The slash command uses an MCP server (`meetcoach-mcp`) to subscribe to the live transcript — server-side blocking calls instead of agent-side `sleep` polling. One quiet tool call per cycle in your Claude Code chat instead of a wall of `Bash(sleep 15...)` blocks.
 
-Register it once in `~/.claude/settings.json` (or any project's `.mcp.json`):
+Get the JSON snippet with the absolute path filled in for your clone:
+
+```bash
+make register-mcp
+```
+
+It prints a block like:
 
 ```json
 {
   "mcpServers": {
     "meetcoach": {
-      "command": "/Users/indranandjha/Developer/personal/meetcoach/.venv/bin/meetcoach-mcp",
+      "command": "/Users/you/.../meetcoach/.venv/bin/meetcoach-mcp",
       "args": []
     }
   }
 }
 ```
 
-Adjust the absolute path to your clone. Restart `claude` after editing. Verify by running `claude mcp list` — `meetcoach` should appear.
+Paste that into `~/.claude/settings.json` (merging with any existing `mcpServers`), restart `claude`, and verify with `claude mcp list` — `meetcoach` should appear with three tools.
 
 ### 7. Verify everything
 
 ```bash
-.venv/bin/meetcoach doctor
+make doctor                   # or: .venv/bin/meetcoach doctor
 ```
 
 Expected output:
@@ -423,6 +438,30 @@ Result in the transcript:
 Mapping is first-seen-wins per session and not persisted, so if speakers join in a different order next time you'll need to adjust the `--names` order.
 
 ## CLI reference
+
+For most operations, the **Makefile is the recommended interface** (run `make` with no args to list every target). The underlying CLI is below for transparency and for cases where you need flags Make doesn't pass through.
+
+### Make targets
+
+```
+make setup            First-time bootstrap (install + audio + slash commands)
+make install          Create the .venv and install meetcoach + deps
+make audio-setup      Install BlackHole + restart Core Audio (macOS only)
+make slash-commands   Install /meeting into every detected LLM tool
+make register-mcp     Print the MCP JSON snippet to paste into your tool's config
+make doctor           Sanity-check the environment
+make start            Launch the live TUI
+make listen           Launch the TUI in listen-only mode (no mic)
+make mcp              Run the MCP server in the foreground (debug)
+make prompt           Print the /meeting prompt body to stdout
+make prompt-copy      Copy the /meeting prompt to your clipboard
+make lint             Run ruff linter
+make format           Auto-format with ruff
+make clean            Remove venv and caches (keeps .env and transcripts)
+make update           git pull + reinstall
+```
+
+### Direct CLI
 
 ```
 meetcoach devices       List input audio devices
