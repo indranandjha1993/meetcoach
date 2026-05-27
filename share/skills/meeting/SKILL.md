@@ -1,10 +1,14 @@
 ---
 name: meeting
 description: >-
-  Watch the live meetcoach transcript via the meetcoach MCP server and respond
-  in real-time only when the user's criteria are met. Triggered when the user
-  invokes /meeting with an instruction for when/how to chime in.
-disable-model-invocation: true
+  Use whenever the user wants to watch, monitor, listen to, follow, or react
+  to a live meeting / standup / call / podcast / interview transcript. Reads
+  from the meetcoach MCP server (transcript file maintained by `meetcoach
+  start` in another terminal). Use this skill if the user invokes /meeting,
+  or says anything like "watch the meeting", "follow this call", "tell me
+  what's being said", "alert me when X comes up", "draft a reply when I'm
+  asked", "summarize the standup", or pastes an instruction about a live
+  audio session.
 ---
 
 # /meeting — live meeting watcher

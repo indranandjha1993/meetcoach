@@ -250,16 +250,27 @@ Claude Code agent (in your project)
 
 ## Using `/meeting` in other LLM tools
 
-The `/meeting` slash command works in any LLM tool that supports MCP. The installer auto-detects four common ones and installs to each:
+The `/meeting` handler works in any LLM tool that supports MCP. The installer auto-detects four common ones and installs to each — but **the invocation mechanism differs per tool**:
 
-| Tool | Auto-installed to | Format | Invoked as |
-|---|---|---|---|
-| **Claude Code** | `~/.claude/commands/meeting.md` | Slash command (`.md` with frontmatter) | `/meeting <instruction>` |
-| **Cursor** | `~/.cursor/skills-cursor/meeting/SKILL.md` | Skill | `/meeting <instruction>` |
-| **Gemini CLI** | `~/.gemini/skills/meeting/SKILL.md` | Skill | `/meeting <instruction>` |
-| **Codex CLI** | `~/.codex/skills/meeting/SKILL.md` | Skill | `/meeting <instruction>` |
+| Tool | Auto-installed to | Invocation |
+|---|---|---|
+| **Claude Code** | `~/.claude/commands/meeting.md` | `/meeting <instruction>` — direct slash command |
+| **Cursor** | `~/.cursor/skills-cursor/meeting/SKILL.md` | `/meeting <instruction>` — direct skill invocation |
+| **Gemini CLI** | `~/.gemini/skills/meeting/SKILL.md` | **Natural language** — auto-invokes when your prompt mentions watching/following/monitoring a meeting/call/podcast |
+| **Codex CLI** | `~/.codex/skills/meeting/SKILL.md` | **Natural language** — same. Codex's `/` syntax is reserved for built-in commands (`/help`, `/clear`); custom skills auto-invoke from description match |
 
-**Critical:** every install path above is an **on-demand** command/skill directory, never an always-loaded memory file (`CLAUDE.md`, `GEMINI.md`, `.cursorrules`, `AGENTS.md`). Your project's memory stays clean — `/meeting` content only loads when you invoke it.
+**Why the difference**: Claude Code and Cursor support user-invoked slash commands. Gemini and Codex skills are auto-invoked by the model when the prompt description matches. The slash command does work, just through a different mechanism.
+
+**Examples that auto-invoke the skill in Codex / Gemini:**
+
+```
+> watch the live meeting and tell me what's being discussed
+> follow this call and alert me if anyone asks me a direct question
+> use the meeting skill to summarize action items as they come up
+> monitor the podcast transcript and flag anything about pricing
+```
+
+**Critical:** every install path above is an **on-demand** command/skill directory, never an always-loaded memory file (`CLAUDE.md`, `GEMINI.md`, `.cursorrules`, `AGENTS.md`). Your project's memory stays clean — the handler only loads when invoked.
 
 You still need to **register the meetcoach MCP server** with each tool (see [Setup §6](#6-register-the-meetcoach-mcp-server-with-claude-code) for Claude — same idea for others, but each tool stores MCP server config in its own place):
 
