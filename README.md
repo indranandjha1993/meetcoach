@@ -138,24 +138,34 @@ Symlinks (not copies), so any edits to `share/skills/meeting/SKILL.md` or `share
 
 See [Using `/meeting` in other LLM tools](#using-meeting-in-other-llm-tools) below for paste-only setups (Antigravity / VS Code Copilot Chat / anything we don't auto-install for).
 
-### 6. Register the meetcoach MCP server with Claude Code
+### 6. Register the meetcoach MCP server with your LLM tools
 
-The slash command uses an MCP server (`meetcoach-mcp`) to subscribe to the live transcript — server-side blocking calls instead of agent-side `sleep` polling. One quiet tool call per cycle in your Claude Code chat instead of a wall of `Bash(sleep 15...)` blocks.
+The `/meeting` slash command needs the `meetcoach-mcp` server registered in **each** LLM tool's config — Claude Code, Cursor, Gemini CLI, and Codex CLI all use it independently. Each tool stores MCP config in its own file/format:
+
+| Tool | Config file | Registration mechanism |
+|---|---|---|
+| Claude Code | `~/.claude.json` → `mcpServers.<name>` | `claude mcp add -s user ...` |
+| Gemini CLI | `~/.gemini/settings.json` → `mcpServers.<name>` | `gemini mcp add -s user ...` |
+| Codex CLI | `~/.codex/config.toml` → `[mcp_servers.<name>]` | `codex mcp add ... -- <bin>` |
+| Cursor | `~/.cursor/mcp.json` → `mcpServers.<name>` | merge JSON (no CLI) |
+
+You don't need to know any of that:
 
 ```bash
 make register-mcp
 ```
 
-That runs `claude mcp add -s user meetcoach $(pwd)/.venv/bin/meetcoach-mcp` for you — registers at user scope so it works in every project, not just one. Re-running is idempotent (detects existing registration and skips).
+Auto-detects every tool installed on your machine and registers meetcoach with each (using the right command / writing to the right file). Idempotent — re-runs are clean no-ops, won't double-add.
 
 Verify:
 
 ```bash
-claude mcp list | grep meetcoach
-# meetcoach: /Users/.../meetcoach/.venv/bin/meetcoach-mcp  - ✓ Connected
+make doctor
 ```
 
-> Note: Claude Code stores MCP servers in `~/.claude.json` (not `~/.claude/settings.json` — that file holds plugin config). `claude mcp add` writes to the right place automatically; don't hand-edit unless you know what you're doing.
+Look for the `MCP server` group — every detected tool should show ✓ registered.
+
+> Note: Claude stores MCP config in `~/.claude.json` (not `~/.claude/settings.json` — that's plugin config). `claude mcp add` writes to the right place automatically; don't hand-edit.
 
 ### 7. Verify everything
 

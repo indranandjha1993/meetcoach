@@ -346,71 +346,131 @@ def _check_mcp_binary() -> Capability:
     )
 
 
-def _check_mcp_registered_claude() -> Capability:
-    """Look for meetcoach in Claude Code's config.
+def _check_mcp_registrations() -> list[Capability]:
+    """Per-tool MCP-server registration check.
 
-    Claude Code stores MCP servers in `~/.claude.json` (not
-    `~/.claude/settings.json` — that's plugin config). Two scopes:
+    Each LLM tool stores MCP server config in its own file/format:
+      Claude:  ~/.claude.json → top-level `mcpServers.meetcoach`
+                              or `projects.<path>.mcpServers.meetcoach`
+      Gemini:  ~/.gemini/settings.json → `mcpServers.meetcoach`
+      Codex:   ~/.codex/config.toml → `[mcp_servers.meetcoach]`
+      Cursor:  ~/.cursor/mcp.json → `mcpServers.meetcoach`
 
-      1. User scope:  top-level `mcpServers.meetcoach`
-      2. Project scope:  `projects.<path>.mcpServers.meetcoach`
-
-    Either counts as registered. We don't shell out to `claude mcp list`
-    because that's slow and adds a subprocess dependency to every scan.
+    Returns one Capability per tool detected on the machine. Tools not
+    installed are reported as DISABLED (no point registering with a tool
+    that isn't there).
     """
-    config_path = Path.home() / ".claude.json"
-    if not config_path.exists():
-        return Capability(
-            name="Claude Code MCP registration",
-            group="mcp",
-            state=CapabilityState.DEGRADED,
-            detail=f"{config_path} doesn't exist (is Claude Code installed?)",
-        )
-    try:
-        data = json.loads(config_path.read_text())
-    except (OSError, json.JSONDecodeError) as e:
-        return Capability(
-            name="Claude Code MCP registration",
-            group="mcp",
-            state=CapabilityState.DEGRADED,
-            detail=f"could not read ~/.claude.json: {e}",
-        )
+    home = Path.home()
+    fix_step = "make register-mcp     # registers with every installed LLM tool"
+    out: list[Capability] = []
 
-    # User scope
+    # --- Claude Code ---
+    out.append(_check_claude_mcp(home, fix_step))
+
+    # --- Gemini CLI ---
+    out.append(_check_gemini_mcp(home, fix_step))
+
+    # --- Codex CLI ---
+    out.append(_check_codex_mcp(home, fix_step))
+
+    # --- Cursor ---
+    out.append(_check_cursor_mcp(home, fix_step))
+
+    return out
+
+
+def _check_claude_mcp(home: Path, fix_step: str) -> Capability:
+    name = "  /meeting MCP (claude)"
+    cfg = home / ".claude.json"
+    if not (home / ".claude").exists():
+        return Capability(name=name, group="mcp", state=CapabilityState.DISABLED,
+                          detail="Claude Code not installed")
+    if not cfg.exists():
+        return Capability(name=name, group="mcp", state=CapabilityState.BROKEN,
+                          detail=f"{cfg} not found", fix_steps=[fix_step])
+    try:
+        data = json.loads(cfg.read_text())
+    except (OSError, json.JSONDecodeError) as e:
+        return Capability(name=name, group="mcp", state=CapabilityState.DEGRADED,
+                          detail=f"could not read: {e}")
     user_servers = (data.get("mcpServers") or {}) if isinstance(data, dict) else {}
     if "meetcoach" in user_servers:
-        return Capability(
-            name="Claude Code MCP registration",
-            group="mcp",
-            state=CapabilityState.OK,
-            detail="registered in user scope (~/.claude.json mcpServers.meetcoach)",
-        )
-
-    # Any project scope
+        return Capability(name=name, group="mcp", state=CapabilityState.OK,
+                          detail="registered (user scope)")
     projects = (data.get("projects") or {}) if isinstance(data, dict) else {}
     for proj_path, proj_cfg in projects.items():
-        if not isinstance(proj_cfg, dict):
-            continue
-        servers = proj_cfg.get("mcpServers") or {}
-        if "meetcoach" in servers:
-            return Capability(
-                name="Claude Code MCP registration",
-                group="mcp",
-                state=CapabilityState.OK,
-                detail=f"registered in project scope ({proj_path})",
-            )
+        if isinstance(proj_cfg, dict) and "meetcoach" in (proj_cfg.get("mcpServers") or {}):
+            return Capability(name=name, group="mcp", state=CapabilityState.OK,
+                              detail=f"registered (project: {proj_path})")
+    return Capability(name=name, group="mcp", state=CapabilityState.BROKEN,
+                      detail="not registered", fix_steps=[fix_step])
 
-    return Capability(
-        name="Claude Code MCP registration",
-        group="mcp",
-        state=CapabilityState.BROKEN,
-        detail="not registered — /meeting slash command won't work in claude",
-        fix_steps=[
-            "make register-mcp",
-            "# or directly:",
-            "# claude mcp add -s user meetcoach /full/path/to/meetcoach-mcp",
-        ],
-    )
+
+def _check_gemini_mcp(home: Path, fix_step: str) -> Capability:
+    name = "  /meeting MCP (gemini)"
+    cfg = home / ".gemini" / "settings.json"
+    if not (home / ".gemini").exists():
+        return Capability(name=name, group="mcp", state=CapabilityState.DISABLED,
+                          detail="Gemini CLI not installed")
+    if not cfg.exists():
+        return Capability(name=name, group="mcp", state=CapabilityState.BROKEN,
+                          detail=f"{cfg} not found", fix_steps=[fix_step])
+    try:
+        data = json.loads(cfg.read_text())
+    except (OSError, json.JSONDecodeError) as e:
+        return Capability(name=name, group="mcp", state=CapabilityState.DEGRADED,
+                          detail=f"could not read: {e}")
+    servers = (data.get("mcpServers") or {}) if isinstance(data, dict) else {}
+    if "meetcoach" in servers:
+        return Capability(name=name, group="mcp", state=CapabilityState.OK,
+                          detail="registered in ~/.gemini/settings.json")
+    return Capability(name=name, group="mcp", state=CapabilityState.BROKEN,
+                      detail="not registered", fix_steps=[fix_step])
+
+
+def _check_codex_mcp(home: Path, fix_step: str) -> Capability:
+    name = "  /meeting MCP (codex)"
+    cfg = home / ".codex" / "config.toml"
+    if not (home / ".codex").exists():
+        return Capability(name=name, group="mcp", state=CapabilityState.DISABLED,
+                          detail="Codex CLI not installed")
+    if not cfg.exists():
+        return Capability(name=name, group="mcp", state=CapabilityState.BROKEN,
+                          detail=f"{cfg} not found", fix_steps=[fix_step])
+    try:
+        import tomllib
+        data = tomllib.loads(cfg.read_text())
+    except (OSError, Exception) as e:
+        return Capability(name=name, group="mcp", state=CapabilityState.DEGRADED,
+                          detail=f"could not read TOML: {e}")
+    servers = data.get("mcp_servers") or {}
+    if "meetcoach" in servers:
+        return Capability(name=name, group="mcp", state=CapabilityState.OK,
+                          detail="registered in ~/.codex/config.toml")
+    return Capability(name=name, group="mcp", state=CapabilityState.BROKEN,
+                      detail="not registered", fix_steps=[fix_step])
+
+
+def _check_cursor_mcp(home: Path, fix_step: str) -> Capability:
+    name = "  /meeting MCP (cursor)"
+    cfg = home / ".cursor" / "mcp.json"
+    if not (home / ".cursor").exists():
+        return Capability(name=name, group="mcp", state=CapabilityState.DISABLED,
+                          detail="Cursor not installed")
+    if not cfg.exists() or cfg.stat().st_size == 0:
+        return Capability(name=name, group="mcp", state=CapabilityState.BROKEN,
+                          detail=f"{cfg} empty or missing", fix_steps=[fix_step])
+    try:
+        data = json.loads(cfg.read_text())
+    except (OSError, json.JSONDecodeError) as e:
+        return Capability(name=name, group="mcp", state=CapabilityState.DEGRADED,
+                          detail=f"could not read: {e}")
+    servers = (data.get("mcpServers") or {}) if isinstance(data, dict) else {}
+    if "meetcoach" in servers:
+        return Capability(name=name, group="mcp", state=CapabilityState.OK,
+                          detail="registered in ~/.cursor/mcp.json")
+    return Capability(name=name, group="mcp", state=CapabilityState.BROKEN,
+                      detail="not registered", fix_steps=[fix_step])
 
 
 # ---------- slash commands ----------
@@ -502,7 +562,7 @@ def check_all(settings: Settings) -> list[Capability]:
 
     # MCP
     caps.append(_check_mcp_binary())
-    caps.append(_check_mcp_registered_claude())
+    caps.extend(_check_mcp_registrations())
 
     # Slash commands
     caps.extend(_check_slash_commands())
