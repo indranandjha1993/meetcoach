@@ -289,17 +289,20 @@ class MeetCoachApp(App):
         yield Footer()
 
     async def on_mount(self) -> None:
-        # Run the full capability scan once; show modal if anything is broken.
+        # Capability scan: surface red items via a non-blocking modal so the
+        # pipeline can start in parallel. push_screen_wait() can't be used
+        # from on_mount (requires a Textual worker), so we use the callback
+        # form instead.
         caps = check_all(self.settings)
         self._refresh_capbar(caps)
         broken = broken_capabilities(caps)
         if broken:
-            choice = await self.push_screen_wait(ReadinessModal(broken))
-            if choice == "quit":
-                self.exit()
-                return
-            if choice == "detail":
-                await self.push_screen_wait(CapabilityDetailScreen(caps))
+            def on_modal_choice(choice: str | None) -> None:
+                if choice == "quit":
+                    self.exit()
+                elif choice == "detail":
+                    self.push_screen(CapabilityDetailScreen(caps))
+            self.push_screen(ReadinessModal(broken), on_modal_choice)
 
         # Refresh the cap bar every 5s so post-launch fixes show up live.
         self.set_interval(5.0, self._tick_caps)
