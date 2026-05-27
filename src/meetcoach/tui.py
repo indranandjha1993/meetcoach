@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import subprocess
 import time
+from functools import partial
+from pathlib import Path
 from typing import ClassVar
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
+from textual.command import DiscoveryHit, Hit, Hits, Provider
 from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen, Screen
 from textual.widgets import Button, Footer, Header, Input, RichLog, Static
@@ -21,6 +25,7 @@ from meetcoach.capabilities import (
 )
 from meetcoach.coach import Coach
 from meetcoach.config import Settings
+from meetcoach.providers import PROVIDER_CLASSES, get_provider
 from meetcoach.stt import DeepgramTranscriber, Transcriber, TranscriptEvent, WhisperTranscriber
 
 _GROUP_TITLES = {
@@ -166,6 +171,70 @@ class CapabilityDetailScreen(Screen):
         self.app.pop_screen()
 
 
+class MeetcoachCommands(Provider):
+    """Command-palette entries that mirror the CLI / hotkeys.
+
+    The user can also bind palette shortcuts to scripted defaults; the source of
+    truth for "what actions exist" stays in this provider.
+    """
+
+    @property
+    def _meetcoach_app(self) -> MeetCoachApp:
+        return self.app  # type: ignore[return-value]
+
+    def _all_commands(self) -> list[tuple[str, str, str]]:
+        app = self._meetcoach_app
+        coach_name = app.coach.provider.name if (app.coach and app.coach.provider) else "?"
+        cmds: list[tuple[str, str, str]] = [
+            ("Ask Claude…", "Open the Ask input (also: [a])", "ask"),
+            (
+                f"Switch coach provider (current: {coach_name})",
+                "Cycle through installed Claude / Gemini / Codex CLIs (also: [s])",
+                "switch_coach",
+            ),
+            ("Reconnect Deepgram", "Drop + reopen the STT websockets (also: [r])", "reconnect_stt"),
+            ("Toggle mic mute", "Stop the mic stream from being transcribed (also: [m])", "toggle_mic"),
+            ("Pause / resume auto coach", "Stop the 25s coach tick (also: [p])", "toggle_pause"),
+            ("Show status detail", "Full breakdown of every capability (also: [?])", "show_detail"),
+            ("Re-run capability scan", "Refresh the top-bar indicators now", "refresh_caps"),
+            ("Clear coach pane", "Wipe the right-hand pane (also: [c])", "clear_coach"),
+            ("Open transcripts folder", "Reveal recorded transcripts in Finder", "open_transcripts"),
+            ("Copy MCP config snippet", "Print the meetcoach MCP JSON to copy into ~/.claude/settings.json", "copy_mcp_config"),
+            ("Show /meeting prompt", "Print the prompt body for paste into any LLM tool", "show_prompt"),
+            ("Reinstall /meeting handler", "Re-run scripts/install-slash-commands.sh", "reinstall_slash"),
+            ("Quit", "Exit meetcoach (also: [q])", "quit"),
+        ]
+        return cmds
+
+    async def discover(self) -> Hits:
+        for title, help_text, action_name in self._all_commands():
+            yield DiscoveryHit(
+                title,
+                partial(self._run_action, action_name),
+                help=help_text,
+            )
+
+    async def search(self, query: str) -> Hits:
+        matcher = self.matcher(query)
+        for title, help_text, action_name in self._all_commands():
+            score = matcher.match(title)
+            if score:
+                yield Hit(
+                    score,
+                    matcher.highlight(title),
+                    partial(self._run_action, action_name),
+                    help=help_text,
+                )
+
+    def _run_action(self, action_name: str) -> None:
+        action = getattr(self._meetcoach_app, f"action_{action_name}", None)
+        if action is None:
+            return
+        result = action()
+        if asyncio.iscoroutine(result):
+            self._meetcoach_app._spawn(result)
+
+
 class MeetCoachApp(App):
     CSS = """
     Screen { layout: vertical; }
@@ -181,13 +250,17 @@ class MeetCoachApp(App):
     """
 
     BINDINGS: ClassVar = [
-        Binding("a", "ask", "Ask Claude"),
+        Binding("a", "ask", "Ask"),
         Binding("m", "toggle_mic", "Mute mic"),
+        Binding("s", "switch_coach", "Switch coach"),
+        Binding("r", "reconnect_stt", "Reconnect STT"),
         Binding("p", "toggle_pause", "Pause coach"),
-        Binding("c", "clear_coach", "Clear coach pane"),
-        Binding("question_mark", "show_detail", "Status detail"),
+        Binding("c", "clear_coach", "Clear coach"),
+        Binding("question_mark", "show_detail", "Status"),
         Binding("q", "quit", "Quit"),
     ]
+
+    COMMANDS = App.COMMANDS | {MeetcoachCommands}
 
     SPEAKER_PALETTE: ClassVar = ["yellow", "green", "magenta", "blue", "red", "orange1"]
 
@@ -352,6 +425,117 @@ class MeetCoachApp(App):
     def action_show_detail(self) -> None:
         caps = check_all(self.settings)
         self.push_screen(CapabilityDetailScreen(caps))
+
+    def action_switch_coach(self) -> None:
+        """Cycle the auto-coach to the next installed provider."""
+        if not self.coach:
+            self._log_coach("[dim]coach not running yet[/]")
+            return
+        available = [
+            name for name, cls in PROVIDER_CLASSES.items()
+            if cls.is_available(self.settings.coach_bin if name == self.settings.coach_provider else None)
+        ]
+        if not available:
+            self._log_coach("[red]no coach providers installed — nothing to switch to[/]")
+            return
+        current = self.coach.provider.name if self.coach.provider else available[0]
+        if current in available:
+            next_name = available[(available.index(current) + 1) % len(available)]
+        else:
+            next_name = available[0]
+        if next_name == current and len(available) == 1:
+            self._log_coach(f"[dim]only {current} is installed — nothing to switch to[/]")
+            return
+        new_provider = get_provider(next_name, model=self.settings.coach_model)
+        self.coach.set_provider(new_provider)
+        self.settings.coach_provider = next_name
+        self._log_coach(f"[dim]coach provider: {current} → {next_name}[/]")
+        self._refresh_capbar()
+
+    def action_reconnect_stt(self) -> None:
+        """Drop and re-open the Deepgram websockets. Useful if a stream dies."""
+        if not self.transcriber:
+            self._log_coach("[dim]transcriber not running[/]")
+            return
+        self._log_coach("[dim]reconnecting Deepgram…[/]")
+        self._spawn(self._do_reconnect())
+
+    async def _do_reconnect(self) -> None:
+        if not self.transcriber:
+            return
+        with contextlib.suppress(Exception):
+            await self.transcriber.reconnect()
+        self._log_coach("[dim]Deepgram reconnect requested — streams reopen on next audio[/]")
+        self._refresh_capbar()
+
+    def action_refresh_caps(self) -> None:
+        self._refresh_capbar()
+        self._log_coach("[dim]capability scan refreshed[/]")
+
+    def action_open_transcripts(self) -> None:
+        path = self.settings.transcript_dir
+        path.mkdir(parents=True, exist_ok=True)
+        with contextlib.suppress(Exception):
+            subprocess.Popen(["open", str(path)])
+        self._log_coach(f"[dim]opened transcripts folder: {path}[/]")
+
+    def action_copy_mcp_config(self) -> None:
+        repo_root = Path(__file__).resolve().parent.parent.parent
+        bin_path = repo_root / ".venv" / "bin" / "meetcoach-mcp"
+        snippet = (
+            "{\n"
+            '  "mcpServers": {\n'
+            '    "meetcoach": {\n'
+            f'      "command": "{bin_path}",\n'
+            '      "args": []\n'
+            "    }\n"
+            "  }\n"
+            "}"
+        )
+        with contextlib.suppress(Exception):
+            subprocess.run(["pbcopy"], input=snippet.encode(), check=True)
+            self._log_coach("[green]✓[/] MCP config copied to clipboard. Paste into ~/.claude/settings.json")
+            return
+        self._log_coach("[yellow]could not copy to clipboard — here's the snippet:[/]")
+        for line in snippet.splitlines():
+            self._log_coach(f"  {line}")
+
+    def action_show_prompt(self) -> None:
+        repo_root = Path(__file__).resolve().parent.parent.parent
+        prompt_path = repo_root / "share" / "skills" / "meeting" / "SKILL.md"
+        if not prompt_path.exists():
+            self._log_coach(f"[red]prompt missing at {prompt_path}[/]")
+            return
+        text = prompt_path.read_text(encoding="utf-8")
+        # Strip frontmatter
+        if text.startswith("---\n"):
+            end = text.find("\n---\n", 4)
+            if end != -1:
+                text = text[end + 5 :].lstrip()
+        with contextlib.suppress(Exception):
+            subprocess.run(["pbcopy"], input=text.encode(), check=True)
+            self._log_coach("[green]✓[/] /meeting prompt copied to clipboard")
+            return
+        self._log_coach("[dim]/meeting prompt:[/]")
+        self._log_coach(text[:500] + ("..." if len(text) > 500 else ""))
+
+    def action_reinstall_slash(self) -> None:
+        repo_root = Path(__file__).resolve().parent.parent.parent
+        installer = repo_root / "scripts" / "install-slash-commands.sh"
+        if not installer.exists():
+            self._log_coach(f"[red]installer not found at {installer}[/]")
+            return
+        try:
+            out = subprocess.run(
+                ["bash", str(installer)], capture_output=True, text=True, timeout=10
+            )
+            for line in out.stdout.splitlines():
+                self._log_coach(f"[dim]{line}[/]")
+            if out.returncode != 0:
+                self._log_coach(f"[red]installer exit {out.returncode}[/]")
+        except Exception as e:
+            self._log_coach(f"[red]installer failed: {e}[/]")
+        self._refresh_capbar()
 
     def action_ask(self) -> None:
         row = self.query_one("#ask-row", Container)

@@ -416,10 +416,14 @@ Hotkeys:
 
 - `a` — ask Claude an on-demand question about the meeting so far
 - `m` — mute / unmute the mic mid-session
+- `s` — switch coach provider (cycles installed Claude / Gemini / Codex)
+- `r` — reconnect Deepgram (drop + reopen the STT websockets)
 - `p` — pause / resume the auto coach
 - `c` — clear the coach pane
 - `?` — show full status detail (every capability with state + fix steps)
 - `q` — quit
+
+For everything else (reinstall slash command, copy MCP config to clipboard, open transcripts folder, show /meeting prompt, re-run capability scan), press the **command palette** key (`Ctrl+\` by default in Textual; `Ctrl+P` on some configs). Type to filter — every action the CLI exposes is reachable from there.
 
 The active session's transcript is saved to `transcripts/meeting-<timestamp>.txt` and a stable symlink at `~/.meetcoach/current.txt` is repointed to it on every launch.
 

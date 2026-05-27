@@ -30,6 +30,10 @@ class Transcriber:
     async def close(self) -> None:  # pragma: no cover
         return None
 
+    async def reconnect(self) -> None:  # pragma: no cover
+        """Close all in-flight connections; the feed loop will reopen as new audio arrives."""
+        return None
+
 
 class DeepgramTranscriber(Transcriber):
     """Deepgram Nova-3 streaming over raw websockets.
@@ -189,6 +193,10 @@ class DeepgramTranscriber(Transcriber):
         for conn in conns:
             with contextlib.suppress(Exception):
                 await conn.close()  # type: ignore[attr-defined]
+
+    async def reconnect(self) -> None:
+        """Drop both per-channel websockets. The next audio chunk re-opens them."""
+        await self.close()
 
 
 class WhisperTranscriber(Transcriber):
