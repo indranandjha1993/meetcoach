@@ -44,10 +44,10 @@ _STATE_COLOR = {
 }
 
 _STATE_GLYPH = {
-    CapabilityState.OK: "✓",
-    CapabilityState.DEGRADED: "!",
-    CapabilityState.BROKEN: "✗",
-    CapabilityState.DISABLED: "-",
+    CapabilityState.OK: "[+]",
+    CapabilityState.DEGRADED: "[!]",
+    CapabilityState.BROKEN: "[X]",
+    CapabilityState.DISABLED: "[-]",
 }
 
 
@@ -66,22 +66,31 @@ class StatusBar(Static):
 
 
 class CapabilityBar(Static):
-    """One-line status bar: colored dot per capability group + recording info."""
+    """One-line status bar: colored dot per capability group + run info on the right."""
 
-    def render_caps(self, caps: list[Capability], recording_path: str | None) -> None:
+    def render_caps(
+        self,
+        caps: list[Capability],
+        recording_path: str | None,
+        coach_label: str | None = None,
+    ) -> None:
         groups = group_by(caps)
-        parts = []
+        left_parts = []
         for grp in ("audio", "transcription", "coach", "mcp"):
             items = [c for c in groups.get(grp, []) if c.state != CapabilityState.DISABLED]
             state = _worst_state(items) if items else CapabilityState.DISABLED
             color = _STATE_COLOR[state]
             label = _GROUP_TITLES[grp]
-            parts.append(f"[{color}]●[/] {label}")
-        line = "   ".join(parts)
+            left_parts.append(f"[{color}]*[/] {label}")
+        right_parts = []
+        if coach_label:
+            right_parts.append(f"coach: {coach_label}")
         if recording_path:
-            line += f"   [dim]│   rec → {recording_path}[/]"
-        line += "   [dim]│   [?] details[/]"
-        self.update(line)
+            right_parts.append(f"rec -> {recording_path}")
+        right_parts.append("[?] details")
+        left = "   ".join(left_parts)
+        right = "   |   ".join(right_parts)
+        self.update(f"{left}   [dim]|   {right}[/]")
 
 
 class ReadinessModal(ModalScreen[str]):
@@ -237,16 +246,57 @@ class MeetcoachCommands(Provider):
 
 class MeetCoachApp(App):
     CSS = """
-    Screen { layout: vertical; }
-    #capbar { height: 1; background: $boost; color: $text; padding: 0 1; }
-    #status { height: 1; background: $boost; color: $text-muted; padding: 0 1; }
-    #panes { height: 1fr; }
-    #transcript-pane { width: 60%; border: solid $accent; padding: 0 1; }
-    #coach-pane { width: 40%; border: solid $success; padding: 0 1; }
-    #transcript-pane > .pane-title, #coach-pane > .pane-title { color: $text-muted; }
-    #ask-row { height: 3; display: none; }
-    #ask-row.visible { display: block; }
-    RichLog { height: 1fr; }
+    Screen {
+        layout: vertical;
+        background: $surface;
+    }
+    #capbar {
+        height: 1;
+        background: $boost;
+        color: $text;
+        padding: 0 1;
+    }
+    #status {
+        height: 1;
+        background: $surface;
+        color: $text-muted;
+        padding: 0 1;
+    }
+    #panes {
+        height: 1fr;
+        padding: 0;
+    }
+    #transcript-pane {
+        width: 60%;
+        border: solid $primary;
+        padding: 0 1;
+    }
+    #coach-pane {
+        width: 40%;
+        border: solid $primary;
+        padding: 0 1;
+    }
+    #transcript-pane > .pane-title,
+    #coach-pane > .pane-title {
+        color: $accent;
+        text-style: bold;
+        padding-bottom: 1;
+    }
+    RichLog {
+        height: 1fr;
+        scrollbar-size-vertical: 1;
+        scrollbar-color: $primary-lighten-2 30%;
+        scrollbar-background: $surface;
+        scrollbar-corner-color: $surface;
+    }
+    #ask-row {
+        height: 3;
+        display: none;
+    }
+    #ask-row.visible {
+        display: block;
+        border: solid $accent;
+    }
     """
 
     BINDINGS: ClassVar = [
@@ -272,6 +322,7 @@ class MeetCoachApp(App):
         self.coach: Coach | None = None
         self._partials: dict[str, str] = {}
         self._bg: set[asyncio.Task] = set()
+        self._last_logged_speaker: str | None = None  # for smart grouping
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -310,6 +361,13 @@ class MeetCoachApp(App):
         self.set_status(
             f"engine={self.settings.resolve_engine()} | mic={self.settings.mic_device} | system={self.settings.system_device}"
         )
+        # Placeholder so the Coach pane isn't visually empty at launch.
+        self._log_coach(
+            "[dim]Coach idle. Surfaces notes every "
+            f"{int(self.settings.coach_interval)}s if anything's worth flagging.[/]"
+        )
+        self._log_coach("[dim]Press [a] to ask anything right now, or ^p for the command palette.[/]")
+        self._log_coach("")
         try:
             await self._start_pipeline()
         except Exception as e:
@@ -376,9 +434,10 @@ class MeetCoachApp(App):
             if not text:
                 continue
             label = labeler.label(spk) if labeler else spk
-            parts.append(f"{label}… {text[-60:]}")
+            tail = text[-60:] if len(text) > 60 else text
+            parts.append(f"{label}: {tail}")
         if parts:
-            self.set_status(" | ".join(parts))
+            self.set_status("  ".join(parts))
 
     def _color_for(self, speaker: str) -> str:
         if speaker == "you":
@@ -393,11 +452,18 @@ class MeetCoachApp(App):
 
     def _log_final(self, ev: TranscriptEvent) -> None:
         t = time.strftime("%H:%M:%S", time.localtime(ev.ts))
-        color = self._color_for(ev.speaker)
-        labeler = self.coach.labeler if self.coach else None
-        label = labeler.label(ev.speaker) if labeler else ev.speaker
         log = self.query_one("#transcript-log", RichLog)
-        log.write(f"[dim]{t}[/] [{color}]{label}:[/] {ev.text}")
+        # Smart grouping: omit speaker label when the same speaker continues.
+        # Reduces visual noise during long monologues (the dominant pattern
+        # in podcasts / one-person standups / talks).
+        if ev.speaker == self._last_logged_speaker:
+            log.write(f"[dim]{t}[/]            {ev.text}")
+        else:
+            color = self._color_for(ev.speaker)
+            labeler = self.coach.labeler if self.coach else None
+            label = labeler.label(ev.speaker) if labeler else ev.speaker
+            log.write(f"[dim]{t}[/] [{color}]{label}:[/] {ev.text}")
+            self._last_logged_speaker = ev.speaker
 
     def _on_suggestion(self, text: str) -> None:
         t = time.strftime("%H:%M:%S")
@@ -419,8 +485,13 @@ class MeetCoachApp(App):
         if caps is None:
             caps = check_all(self.settings)
         rec = self.coach.transcript_path.name if (self.coach and self.coach.transcript_path) else None
+        coach_label = None
+        if self.coach and self.coach.provider:
+            coach_label = self.coach.provider.name
+            if self.settings.coach_model:
+                coach_label += f" ({self.settings.coach_model})"
         with contextlib.suppress(Exception):
-            self.query_one("#capbar", CapabilityBar).render_caps(caps, rec)
+            self.query_one("#capbar", CapabilityBar).render_caps(caps, rec, coach_label)
 
     def _tick_caps(self) -> None:
         self._refresh_capbar()
