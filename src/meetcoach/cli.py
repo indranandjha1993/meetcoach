@@ -250,7 +250,66 @@ def start(
         mic_label=mic_label,
         names=name_list,
     )
+
+    _validate_stt_engine(settings)
+
     MeetCoachApp(settings).run()
+
+
+def _validate_stt_engine(settings: Settings) -> None:
+    """Fail fast with actionable setup instructions if the STT engine isn't ready.
+
+    Runs before the TUI opens so any error lands in the terminal where the
+    user can read and act on it, instead of flashing in the coach pane.
+    """
+    engine = settings.resolve_engine()
+    if engine == "deepgram":
+        if settings.deepgram_key:
+            return
+        console.print("[red]✗ Deepgram API key not configured.[/]\n")
+        console.print("  meetcoach uses Deepgram for live transcription. To set up:\n")
+        console.print(
+            "  1. Get a free API key at https://deepgram.com "
+            "(free $200 credit, ~750 hours)"
+        )
+        console.print("  2. Copy the example env file:")
+        console.print("       [cyan]cp .env.example .env[/]")
+        console.print("  3. Open .env and paste your key:")
+        console.print("       [cyan]DEEPGRAM_API_KEY=your_key_here[/]")
+        console.print("  4. Re-run: [cyan]meetcoach start[/]\n")
+        console.print(
+            "  Don't have / want a Deepgram account? Run with local Whisper "
+            "(no key, lower accuracy, no diarization):"
+        )
+        console.print("       [cyan]meetcoach start --engine whisper[/]")
+        sys.exit(2)
+
+    if engine == "whisper":
+        missing = []
+        try:
+            import faster_whisper  # noqa: F401
+        except ImportError:
+            missing.append("faster-whisper")
+        try:
+            import webrtcvad  # noqa: F401
+        except ImportError:
+            missing.append("webrtcvad")
+        if not missing:
+            return
+        console.print(f"[red]✗ Whisper backend missing: {', '.join(missing)}[/]\n")
+        console.print("  To install the local Whisper backend:")
+        console.print(r"       [cyan]uv pip install 'meetcoach\[whisper]'[/]" + "\n")
+        console.print(
+            "  Or use Deepgram (cloud, higher accuracy, free $200 credit) by setting "
+            "DEEPGRAM_API_KEY in .env."
+        )
+        sys.exit(2)
+
+    console.print(
+        f"[red]Unknown STT engine: {engine!r}.[/] "
+        "Use --engine auto|deepgram|whisper."
+    )
+    sys.exit(2)
 
 
 if __name__ == "__main__":
