@@ -14,7 +14,7 @@ from meetcoach.audio import AudioChunk, Speaker
 
 @dataclass(slots=True)
 class TranscriptEvent:
-    speaker: Speaker
+    speaker: str  # "you" for mic; "speaker-N" for diarized system audio
     text: str
     is_final: bool
     ts: float
@@ -32,50 +32,61 @@ class Transcriber:
 
 
 class DeepgramTranscriber(Transcriber):
-    """Deepgram Flux v2 streaming over raw websockets.
+    """Deepgram Nova-3 streaming over raw websockets.
 
-    One connection per speaker channel; Flux emits Update events with the
-    growing transcript per turn and EndOfTurn when the speaker pauses.
-    We map Update→partial, EndOfTurn→final.
+    One connection per audio source. The mic source (`you`) skips diarization
+    — there's only ever one user speaking into it. The system source (`other`)
+    has `diarize=true` so multiple remote speakers each get a stable
+    `speaker-N` label from Deepgram's per-word speaker IDs.
+
+    Final Results events with multiple speakers are split into one
+    TranscriptEvent per contiguous same-speaker word run.
     """
 
-    URL_TEMPLATE = (
-        "wss://api.deepgram.com/v2/listen"
-        "?eot_threshold=0.7"
-        "&eot_timeout_ms=2000"
-        "&model=flux-general-multi"
-        "&encoding=linear16"
-        "&sample_rate={sr}"
-    )
+    URL_BASE = "wss://api.deepgram.com/v1/listen"
 
     def __init__(self, api_key: str, sample_rate: int = 16000) -> None:
         try:
             import websockets  # noqa: F401
         except ImportError as e:
             raise RuntimeError(
-                "websockets not installed (install with: pip install 'meetcoach[deepgram]')"
+                "websockets not installed (install with: pip install websockets)"
             ) from e
         self.api_key = api_key
         self.sample_rate = sample_rate
         self._conns: dict[Speaker, object] = {}
         self._readers: dict[Speaker, asyncio.Task] = {}
         self._out: asyncio.Queue[TranscriptEvent] = asyncio.Queue()
-        self._latest: dict[Speaker, dict[int, str]] = {"you": {}, "other": {}}
 
-    async def _open(self, speaker: Speaker) -> object:
+    def _build_url(self, source: Speaker) -> str:
+        params = [
+            "model=nova-3",
+            "language=multi",
+            "encoding=linear16",
+            f"sample_rate={self.sample_rate}",
+            "smart_format=true",
+            "punctuate=true",
+            "interim_results=true",
+            "endpointing=300",
+        ]
+        if source == "other":
+            params.append("diarize=true")
+        return f"{self.URL_BASE}?{'&'.join(params)}"
+
+    async def _open(self, source: Speaker) -> object:
         import websockets
 
-        url = self.URL_TEMPLATE.format(sr=self.sample_rate)
+        url = self._build_url(source)
         headers = {"Authorization": f"Token {self.api_key}"}
         ws = await asyncio.wait_for(
             websockets.connect(url, additional_headers=headers),
             timeout=10,
         )
-        reader = asyncio.create_task(self._read(speaker, ws))
-        self._readers[speaker] = reader
+        reader = asyncio.create_task(self._read(source, ws))
+        self._readers[source] = reader
         return ws
 
-    async def _read(self, speaker: Speaker, ws) -> None:
+    async def _read(self, source: Speaker, ws) -> None:
         import websockets
 
         try:
@@ -85,22 +96,54 @@ class DeepgramTranscriber(Transcriber):
                     data = json.loads(raw)
                 except Exception:
                     continue
-                evt = data.get("event") or data.get("type") or ""
-                ti = data.get("turn_index")
-                tr = (data.get("transcript") or "").strip()
-                if evt == "Update":
-                    if ti is not None and tr:
-                        self._latest[speaker][ti] = tr
+                if data.get("type") != "Results":
+                    continue
+                alt = (data.get("channel", {}).get("alternatives") or [{}])[0]
+                transcript = (alt.get("transcript") or "").strip()
+                if not transcript:
+                    continue
+                is_final = bool(data.get("is_final"))
+                ts = time.time()
+
+                if source == "you":
+                    await self._out.put(TranscriptEvent("you", transcript, is_final, ts))
+                    continue
+
+                # System source: split by diarized speaker IDs
+                words = alt.get("words") or []
+                if not is_final or not words:
+                    # Partials / no word info → attribute to the first speaker present
+                    first = words[0].get("speaker", 0) if words else 0
+                    await self._out.put(
+                        TranscriptEvent(f"speaker-{first}", transcript, is_final, ts)
+                    )
+                    continue
+
+                # Final result with words → emit one event per contiguous same-speaker run
+                cur_spk: int | None = None
+                cur_words: list[str] = []
+                for w in words:
+                    spk = int(w.get("speaker", 0))
+                    txt = (w.get("punctuated_word") or w.get("word") or "").strip()
+                    if not txt:
+                        continue
+                    if cur_spk is None:
+                        cur_spk = spk
+                    if spk != cur_spk:
+                        text = " ".join(cur_words).strip()
+                        if text:
+                            await self._out.put(
+                                TranscriptEvent(f"speaker-{cur_spk}", text, True, ts)
+                            )
+                        cur_spk = spk
+                        cur_words = []
+                    cur_words.append(txt)
+                if cur_words and cur_spk is not None:
+                    text = " ".join(cur_words).strip()
+                    if text:
                         await self._out.put(
-                            TranscriptEvent(speaker, tr, False, time.time())
+                            TranscriptEvent(f"speaker-{cur_spk}", text, True, ts)
                         )
-                elif evt == "EndOfTurn":
-                    final_text = self._latest[speaker].pop(ti, tr) if ti is not None else tr
-                    if final_text:
-                        await self._out.put(
-                            TranscriptEvent(speaker, final_text, True, time.time())
-                        )
-                # StartOfTurn, Connected, Error: ignore silently (debug-only)
         except websockets.exceptions.ConnectionClosed:
             pass
         except Exception:
@@ -227,7 +270,7 @@ class WhisperTranscriber(Transcriber):
                 self._jobs.add(job)
                 job.add_done_callback(self._jobs.discard)
 
-    async def _transcribe(self, speaker: Speaker, pcm: np.ndarray) -> None:
+    async def _transcribe(self, source: Speaker, pcm: np.ndarray) -> None:
         floats = pcm.astype(np.float32) / 32768.0
         loop = asyncio.get_running_loop()
 
@@ -243,6 +286,7 @@ class WhisperTranscriber(Transcriber):
 
         text = await loop.run_in_executor(None, work)
         if text:
+            label = "you" if source == "you" else "speaker-0"
             await self._out.put(
-                TranscriptEvent(speaker=speaker, text=text, is_final=True, ts=time.time())
+                TranscriptEvent(speaker=label, text=text, is_final=True, ts=time.time())
             )

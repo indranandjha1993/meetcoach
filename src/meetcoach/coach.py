@@ -34,15 +34,51 @@ enough info, say so.
 """
 
 
+class SpeakerLabeler:
+    """Maps raw speaker IDs from the transcriber to human-readable labels.
+
+    - "you" → mic_label (e.g. "Indranand" or "You")
+    - "speaker-N" → next unused name from `names` (first-seen-wins),
+      falling back to "Speaker-N" if names run out.
+    """
+
+    def __init__(self, mic_label: str = "You", names: list[str] | None = None) -> None:
+        self.mic_label = mic_label
+        self.names = list(names or [])
+        self._mapped: dict[str, str] = {}
+
+    def label(self, speaker: str) -> str:
+        if speaker == "you":
+            return self.mic_label
+        if speaker in self._mapped:
+            return self._mapped[speaker]
+        if speaker.startswith("speaker-"):
+            if len(self._mapped) < len(self.names):
+                name = self.names[len(self._mapped)]
+            else:
+                n = speaker.removeprefix("speaker-")
+                name = f"Speaker-{n}"
+            self._mapped[speaker] = name
+            return name
+        return speaker.title()
+
+
 @dataclass(slots=True)
 class TranscriptLine:
     speaker: str
     text: str
     ts: float
 
-    def format(self) -> str:
+    def format(self, labeler: SpeakerLabeler | None = None) -> str:
         t = time.strftime("%H:%M:%S", time.localtime(self.ts))
-        label = "You" if self.speaker == "you" else "Other"
+        if labeler is not None:
+            label = labeler.label(self.speaker)
+        elif self.speaker == "you":
+            label = "You"
+        elif self.speaker.startswith("speaker-"):
+            label = f"Speaker-{self.speaker.removeprefix('speaker-')}"
+        else:
+            label = self.speaker.title()
         return f"[{t}] {label}: {self.text}"
 
 
@@ -53,6 +89,7 @@ class Coach:
     on_ask_reply: Callable[[str, str], None]
     lines: list[TranscriptLine] = field(default_factory=list)
     transcript_path: Path | None = None
+    labeler: SpeakerLabeler | None = None
     _last_sent_idx: int = 0
     _stable_idx: int = 0
     _last_stable_refresh: float = field(default_factory=time.time)
@@ -73,12 +110,18 @@ class Coach:
             stable_link.unlink()
         stable_link.symlink_to(self.transcript_path)
 
+        if self.labeler is None:
+            self.labeler = SpeakerLabeler(
+                mic_label=self.settings.mic_label,
+                names=self.settings.names,
+            )
+
     def add_line(self, speaker: str, text: str) -> None:
         line = TranscriptLine(speaker=speaker, text=text, ts=time.time())
         self.lines.append(line)
         if self.transcript_path:
             with self.transcript_path.open("a") as f:
-                f.write(line.format() + "\n")
+                f.write(line.format(self.labeler) + "\n")
 
     def toggle_pause(self) -> bool:
         self._paused = not self._paused
@@ -111,8 +154,8 @@ class Coach:
                 self._stable_idx = max(0, len(self.lines) - 4)
                 self._last_stable_refresh = time.time()
 
-            stable = "\n".join(line.format() for line in self.lines[: self._stable_idx]) or "(none yet)"
-            fresh = "\n".join(line.format() for line in self.lines[self._stable_idx :])
+            stable = "\n".join(line.format(self.labeler) for line in self.lines[: self._stable_idx]) or "(none yet)"
+            fresh = "\n".join(line.format(self.labeler) for line in self.lines[self._stable_idx :])
             self._last_sent_idx = len(self.lines)
 
             prompt = (
@@ -127,7 +170,7 @@ class Coach:
             self._inflight = False
 
     async def ask(self, question: str) -> None:
-        full = "\n".join(line.format() for line in self.lines) or "(no transcript yet)"
+        full = "\n".join(line.format(self.labeler) for line in self.lines) or "(no transcript yet)"
         prompt = (
             f"<transcript>\n{full}\n</transcript>\n\n"
             f"<question>\n{question}\n</question>"

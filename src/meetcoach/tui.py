@@ -39,13 +39,15 @@ class MeetCoachApp(App):
         Binding("q", "quit", "Quit"),
     ]
 
+    SPEAKER_PALETTE: ClassVar = ["yellow", "green", "magenta", "blue", "red", "orange1"]
+
     def __init__(self, settings: Settings) -> None:
         super().__init__()
         self.settings = settings
         self.capture: DualCapture | None = None
         self.transcriber: Transcriber | None = None
         self.coach: Coach | None = None
-        self._partials: dict[str, str] = {"you": "", "other": ""}
+        self._partials: dict[str, str] = {}
         self._bg: set[asyncio.Task] = set()
 
     def compose(self) -> ComposeResult:
@@ -123,21 +125,33 @@ class MeetCoachApp(App):
             self._render_partials()
 
     def _render_partials(self) -> None:
-        # Partials are noisy; surface briefly in the status bar instead of the log.
-        you = self._partials.get("you", "")
-        other = self._partials.get("other", "")
+        # Partials are noisy; surface briefly in the status bar.
+        labeler = self.coach.labeler if self.coach else None
         parts = []
-        if you:
-            parts.append(f"you… {you[-60:]}")
-        if other:
-            parts.append(f"other… {other[-60:]}")
+        for spk, text in self._partials.items():
+            if not text:
+                continue
+            label = labeler.label(spk) if labeler else spk
+            parts.append(f"{label}… {text[-60:]}")
         if parts:
             self.set_status(" | ".join(parts))
 
+    def _color_for(self, speaker: str) -> str:
+        if speaker == "you":
+            return "cyan"
+        if speaker.startswith("speaker-"):
+            try:
+                n = int(speaker.removeprefix("speaker-"))
+            except ValueError:
+                n = 0
+            return self.SPEAKER_PALETTE[n % len(self.SPEAKER_PALETTE)]
+        return "white"
+
     def _log_final(self, ev: TranscriptEvent) -> None:
         t = time.strftime("%H:%M:%S", time.localtime(ev.ts))
-        color = "cyan" if ev.speaker == "you" else "yellow"
-        label = "You" if ev.speaker == "you" else "Other"
+        color = self._color_for(ev.speaker)
+        labeler = self.coach.labeler if self.coach else None
+        label = labeler.label(ev.speaker) if labeler else ev.speaker
         log = self.query_one("#transcript-log", RichLog)
         log.write(f"[dim]{t}[/] [{color}]{label}:[/] {ev.text}")
 

@@ -110,6 +110,20 @@ def doctor() -> None:
 @click.option("--model", "coach_model", default=None, help="Override --model passed to claude -p.")
 @click.option("--no-mic", is_flag=True, help="Skip mic capture (system audio only).")
 @click.option("--no-system", is_flag=True, help="Skip system audio capture (mic only).")
+@click.option(
+    "--mic-label",
+    default="You",
+    show_default=True,
+    help="Label for the mic speaker (your own voice).",
+)
+@click.option(
+    "--names",
+    default=None,
+    help=(
+        "Comma-separated names for remote speakers, in first-seen order. "
+        "e.g. --names 'Vinay,Priya,Sam' maps speaker-0→Vinay, speaker-1→Priya, …"
+    ),
+)
 def start(
     mic: str | None,
     system: str | None,
@@ -119,6 +133,8 @@ def start(
     coach_model: str | None,
     no_mic: bool,
     no_system: bool,
+    mic_label: str,
+    names: str | None,
 ) -> None:
     """Launch the live meeting TUI."""
     from meetcoach.tui import MeetCoachApp
@@ -135,6 +151,7 @@ def start(
             "Pass --no-system to silence this warning, or install BlackHole.[/]"
         )
 
+    name_list = [n.strip() for n in names.split(",") if n.strip()] if names else []
     settings = Settings(
         mic_device=mic_idx,
         system_device=sys_idx,
@@ -142,6 +159,8 @@ def start(
         whisper_model=whisper_model,
         coach_interval=interval,
         coach_model=coach_model,
+        mic_label=mic_label,
+        names=name_list,
     )
     MeetCoachApp(settings).run()
 

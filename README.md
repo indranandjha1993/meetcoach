@@ -142,6 +142,25 @@ For testing with YouTube or any workflow where you don't want your mic captured:
 
 This avoids the "your mic picks up the meeting playing through your speakers and double-transcribes it" problem.
 
+### Speaker labels
+
+By default the transcript uses `You:` for your mic and `Speaker-0:` / `Speaker-1:` / … for remote participants (Deepgram Nova-3 does diarization on the system-audio channel and assigns a stable ID to each distinct voice).
+
+Personalize with two flags:
+
+```bash
+.venv/bin/meetcoach start \
+  --mic-label "Indranand" \
+  --names "Vinay,Priya,Sam"
+```
+
+Result in the transcript:
+- Your mic becomes `Indranand:`
+- The first remote speaker to talk becomes `Vinay:`, the second `Priya:`, the third `Sam:`
+- A fourth remote speaker (no name supplied) falls back to `Speaker-3:`
+
+Mapping is first-seen-wins per session and not persisted, so if speakers join in a different order next time you'll need to adjust the `--names` order.
+
 ## CLI reference
 
 ```
@@ -154,6 +173,8 @@ Common flags for `start`:
   --system <name|index>       Override system-audio device (default: BlackHole)
   --no-mic                    Skip mic capture (use system audio only)
   --no-system                 Skip system-audio capture (mic only)
+  --mic-label NAME            Label for your mic in the transcript (default: "You")
+  --names "N1,N2,..."         Names for remote speakers, first-seen-wins assignment
   --interval <seconds>        Coach tick interval (default: 25)
   --model <name>              Pass --model to claude -p
   --engine deepgram|whisper   Force STT backend (default: auto-detect from env)
@@ -170,10 +191,13 @@ Common flags for `start`:
   └────────────────────┬──────────────────────┘
                        │  int16 PCM @ 16kHz
                        ▼
-        Deepgram Flux v2 (raw websocket per channel)
-                       │  Update events → partials
-                       │  EndOfTurn events → final lines
+        Deepgram Nova-3 streaming (raw websocket per source)
+                       │  • mic source: language=multi, no diarize → speaker="you"
+                       │  • system source: language=multi + diarize=true
+                       │      → per-word speaker IDs split into "speaker-N"
                        ▼
+            SpeakerLabeler (maps to mic_label / --names)
+                       │
         Transcript log  +  ~/.meetcoach/current.txt
                        │
        ┌───────────────┴───────────────┐
@@ -186,7 +210,7 @@ Common flags for `start`:
            (rolling transcript + instruction prompt)
 ```
 
-**Why Flux v2 raw websockets instead of the SDK?** The `deepgram-sdk`'s `nova-3 language=multi` path hangs silently on connect. The Flux v2 endpoint with `flux-general-multi` works reliably and handles Hindi/English code-switching natively, so we talk to it directly over a websocket.
+**Why Nova-3 streaming with raw websockets instead of the SDK?** Deepgram recommends Nova-3 specifically for multi-speaker meeting transcription (better noise/crosstalk robustness than the Flux conversational model), and `diarize=true` gives us per-speaker IDs out of the box. We talk to the v1 listen endpoint directly because the `deepgram-sdk`'s `nova-3 language=multi` path hangs silently on connect — bug in the Python SDK, not the API itself.
 
 **Why a `claude -p` subprocess instead of the Anthropic SDK?** Uses your Claude Max plan, no API key needed, no per-call billing.
 
@@ -196,7 +220,10 @@ Common flags for `start`:
 Core Audio hasn't picked up the new driver. Run `sudo killall coreaudiod` (briefly cuts audio for ~1s in any app) or reboot.
 
 ### Transcript labels things as `You:` when only system audio is playing
-Your mic is picking up the meeting playing through your speakers and the STT is transcribing it twice. Either wear headphones, or start with `--no-mic`.
+Your mic is picking up the meeting playing through your speakers and the STT is transcribing it twice (once via the mic channel as `You:`, once via the system channel with a `Speaker-N:` label). Either wear headphones, or start with `--no-mic`.
+
+### Two speakers share the same `Speaker-N` ID, or one speaker is split across two IDs
+Voice diarization isn't perfect — overlapping speech, similar voices, or someone changing mics mid-call can confuse it. Expect roughly 80-90% accuracy on clean 3-5 speaker audio, lower with heavier crosstalk. There's no fix at the meetcoach level; this is a Deepgram diarization limit. If a session has been particularly bad, killing and restarting `meetcoach start` resets the diarization (new session, fresh speaker IDs).
 
 ### YouTube/meeting tab hangs on "loading" when you switch system output
 Reload the tab. Browsers cache the audio device at page load; changing system output mid-stream confuses them.

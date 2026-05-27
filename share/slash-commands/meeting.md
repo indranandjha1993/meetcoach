@@ -12,7 +12,21 @@ $ARGUMENTS
 
 ## The transcript
 
-The live transcript is at `~/.meetcoach/current.txt`. It's updated by `meetcoach` (running in another terminal) as the meeting progresses — new lines are appended as speakers finish each turn. Each line is formatted like `[HH:MM:SS] You: <text>` or `[HH:MM:SS] Other: <text>`.
+The live transcript is at `~/.meetcoach/current.txt`. It's updated by `meetcoach` (running in another terminal) as the meeting progresses — new lines are appended as each speaker finishes an utterance. Each line is formatted like `[HH:MM:SS] <Label>: <text>` where `<Label>` is one of:
+
+- The user's configured mic label (default `You`, or whatever they passed to `--mic-label`)
+- A real name like `Vinay` / `Priya` if they pre-mapped remote speakers via `--names`
+- A fallback `Speaker-0` / `Speaker-1` / `Speaker-N` when no name was supplied for that speaker
+
+So a multi-speaker standup might look like:
+
+```
+[10:23:01] Indranand: where are we on the auth refactor?
+[10:23:05] Vinay: 80 percent done, fixtures land EOD.
+[10:23:18] Speaker-2: any blockers we should know about?
+```
+
+When responding, refer to people by the label as it appears in the transcript.
 
 If the file doesn't exist or is empty, meetcoach isn't running yet. Tell the user that once, then exit — don't loop on an empty file.
 

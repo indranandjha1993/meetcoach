@@ -25,6 +25,8 @@ class Settings:
     claude_bin: str = field(default_factory=lambda: os.getenv("CLAUDE_BIN", "claude"))
     deepgram_key: str | None = field(default_factory=lambda: os.getenv("DEEPGRAM_API_KEY"))
     transcript_dir: Path = TRANSCRIPT_DIR
+    mic_label: str = "You"
+    names: list[str] = field(default_factory=list)
 
     def resolve_engine(self) -> str:
         if self.engine != "auto":
