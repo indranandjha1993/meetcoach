@@ -347,42 +347,69 @@ def _check_mcp_binary() -> Capability:
 
 
 def _check_mcp_registered_claude() -> Capability:
-    settings_path = Path.home() / ".claude" / "settings.json"
-    if not settings_path.exists():
+    """Look for meetcoach in Claude Code's config.
+
+    Claude Code stores MCP servers in `~/.claude.json` (not
+    `~/.claude/settings.json` — that's plugin config). Two scopes:
+
+      1. User scope:  top-level `mcpServers.meetcoach`
+      2. Project scope:  `projects.<path>.mcpServers.meetcoach`
+
+    Either counts as registered. We don't shell out to `claude mcp list`
+    because that's slow and adds a subprocess dependency to every scan.
+    """
+    config_path = Path.home() / ".claude.json"
+    if not config_path.exists():
         return Capability(
             name="Claude Code MCP registration",
             group="mcp",
             state=CapabilityState.DEGRADED,
-            detail=f"{settings_path} doesn't exist (is Claude Code installed?)",
+            detail=f"{config_path} doesn't exist (is Claude Code installed?)",
         )
     try:
-        data = json.loads(settings_path.read_text())
+        data = json.loads(config_path.read_text())
     except (OSError, json.JSONDecodeError) as e:
         return Capability(
             name="Claude Code MCP registration",
             group="mcp",
             state=CapabilityState.DEGRADED,
-            detail=f"could not read settings.json: {e}",
+            detail=f"could not read ~/.claude.json: {e}",
         )
-    servers = (data.get("mcpServers") or {}) if isinstance(data, dict) else {}
-    if "meetcoach" not in servers:
+
+    # User scope
+    user_servers = (data.get("mcpServers") or {}) if isinstance(data, dict) else {}
+    if "meetcoach" in user_servers:
         return Capability(
             name="Claude Code MCP registration",
             group="mcp",
-            state=CapabilityState.BROKEN,
-            detail="not registered — /meeting slash command won't work in claude",
-            fix_steps=[
-                "make register-mcp     # prints the JSON snippet",
-                "# paste the printed mcpServers.meetcoach block into",
-                f"# {settings_path}",
-                "# restart `claude` after editing",
-            ],
+            state=CapabilityState.OK,
+            detail="registered in user scope (~/.claude.json mcpServers.meetcoach)",
         )
+
+    # Any project scope
+    projects = (data.get("projects") or {}) if isinstance(data, dict) else {}
+    for proj_path, proj_cfg in projects.items():
+        if not isinstance(proj_cfg, dict):
+            continue
+        servers = proj_cfg.get("mcpServers") or {}
+        if "meetcoach" in servers:
+            return Capability(
+                name="Claude Code MCP registration",
+                group="mcp",
+                state=CapabilityState.OK,
+                detail=f"registered in project scope ({proj_path})",
+            )
+
     return Capability(
         name="Claude Code MCP registration",
         group="mcp",
-        state=CapabilityState.OK,
-        detail=f"registered in {settings_path}",
+        state=CapabilityState.BROKEN,
+        detail="not registered — /meeting slash command won't work in claude",
+        fix_steps=[
+            "make register-mcp",
+            "# or directly:",
+            "# claude mcp add -s user meetcoach /full/path/to/meetcoach-mcp",
+        ],
     )
 
 

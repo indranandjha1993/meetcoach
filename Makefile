@@ -54,15 +54,26 @@ endif
 slash-commands:  ## Install /meeting handler into every detected LLM tool
 	./scripts/install-slash-commands.sh
 
-register-mcp:  ## Print MCP server JSON to paste into ~/.claude/settings.json
-	@echo '{'
-	@echo '  "mcpServers": {'
-	@echo '    "meetcoach": {'
-	@echo '      "command": "$(CURDIR)/$(BIN)/meetcoach-mcp",'
-	@echo '      "args": []'
-	@echo '    }'
-	@echo '  }'
-	@echo '}'
+register-mcp:  ## Register meetcoach with Claude Code at user scope (claude mcp add)
+	@if ! command -v claude >/dev/null 2>&1; then \
+	  echo "✗ claude CLI not found on PATH. Install Claude Code first:"; \
+	  echo "    https://docs.claude.com/en/docs/claude-code"; \
+	  exit 1; \
+	fi
+	@MCP_BIN="$(CURDIR)/$(BIN)/meetcoach-mcp"; \
+	if [ ! -x "$$MCP_BIN" ]; then \
+	  echo "✗ $$MCP_BIN missing — run 'make install' first"; \
+	  exit 1; \
+	fi; \
+	if claude mcp list 2>/dev/null | grep -q "^meetcoach:"; then \
+	  echo "✓ meetcoach already registered with Claude Code"; \
+	  claude mcp list 2>/dev/null | grep "^meetcoach:"; \
+	else \
+	  echo "Registering meetcoach in user scope (works in any project)..."; \
+	  claude mcp add -s user meetcoach "$$MCP_BIN"; \
+	  echo ""; \
+	  echo "Verify with: claude mcp list"; \
+	fi
 
 doctor:  ## Sanity-check the environment (BlackHole, mic, providers, MCP, STT)
 	@$(BIN)/meetcoach doctor

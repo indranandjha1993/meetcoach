@@ -142,26 +142,20 @@ See [Using `/meeting` in other LLM tools](#using-meeting-in-other-llm-tools) bel
 
 The slash command uses an MCP server (`meetcoach-mcp`) to subscribe to the live transcript — server-side blocking calls instead of agent-side `sleep` polling. One quiet tool call per cycle in your Claude Code chat instead of a wall of `Bash(sleep 15...)` blocks.
 
-Get the JSON snippet with the absolute path filled in for your clone:
-
 ```bash
 make register-mcp
 ```
 
-It prints a block like:
+That runs `claude mcp add -s user meetcoach $(pwd)/.venv/bin/meetcoach-mcp` for you — registers at user scope so it works in every project, not just one. Re-running is idempotent (detects existing registration and skips).
 
-```json
-{
-  "mcpServers": {
-    "meetcoach": {
-      "command": "/Users/you/.../meetcoach/.venv/bin/meetcoach-mcp",
-      "args": []
-    }
-  }
-}
+Verify:
+
+```bash
+claude mcp list | grep meetcoach
+# meetcoach: /Users/.../meetcoach/.venv/bin/meetcoach-mcp  - ✓ Connected
 ```
 
-Paste that into `~/.claude/settings.json` (merging with any existing `mcpServers`), restart `claude`, and verify with `claude mcp list` — `meetcoach` should appear with three tools.
+> Note: Claude Code stores MCP servers in `~/.claude.json` (not `~/.claude/settings.json` — that file holds plugin config). `claude mcp add` writes to the right place automatically; don't hand-edit unless you know what you're doing.
 
 ### 7. Verify everything
 
