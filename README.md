@@ -264,6 +264,7 @@ Run `make` (no args) for the live list.
 make setup            First-time bootstrap (install + audio + slash commands + MCP)
 make install          Create the .venv and install deps
 make audio-setup      Install BlackHole + restart Core Audio (macOS only)
+make install-fonts    Install Noto fonts for proper Devanagari/Hindi rendering
 make slash-commands   Install /meeting handler into every detected LLM tool
 make register-mcp     Register meetcoach-mcp with every detected LLM tool
 make doctor           Sanity-check the environment
@@ -318,6 +319,14 @@ make update           git pull + reinstall
 **Coach pane stays empty.** Auto coach only fires every 25s and stays silent when nothing is notable. Press `[a]` and ask directly to verify the LLM CLI is wired. If it errors, run `meetcoach doctor` and check the Coach group.
 
 **Capability bar shows red MCP.** Run `make register-mcp` — registers with every installed tool and re-runs are no-ops. Check `make doctor` afterward.
+
+**Hindi / Devanagari (or other non-Latin) text renders with weird gaps in the transcript pane.** The default monospace fonts on most terminals (SF Mono, Menlo, Monaco) don't have Devanagari glyphs — the terminal falls back to a different font whose metrics don't match, producing wide-spaced output. Install Noto fonts:
+
+```bash
+make install-fonts            # brew installs font-noto-sans-mono + font-noto-sans-devanagari
+```
+
+Then **manually configure your terminal** to use Noto Sans Mono (`make install-fonts` prints exact steps for Terminal.app / iTerm2 / Ghostty / Kitty). meetcoach can't change your terminal's font setting — that's a one-time per-terminal config. Other terminals worth considering for better international text rendering: **Ghostty**, **Kitty**, **WezTerm**.
 
 ### FAQ
 

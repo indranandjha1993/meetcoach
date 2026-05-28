@@ -7,8 +7,8 @@ UNAME := $(shell uname)
 VENV := .venv
 BIN := $(VENV)/bin
 
-.PHONY: help setup install audio-setup slash-commands register-mcp doctor \
-        start listen mcp prompt prompt-copy lint format test clean update status
+.PHONY: help setup install audio-setup install-fonts slash-commands register-mcp \
+        doctor start listen mcp prompt prompt-copy lint format test clean update status
 
 help:  ## Show this help with all available targets
 	@printf "\nmeetcoach — Make targets:\n\n"
@@ -49,6 +49,28 @@ else
 	@echo "[skip] audio-setup is macOS-only."
 	@echo "       Linux audio backend (PulseAudio / PipeWire) is planned but not yet"
 	@echo "       shipped. meetcoach will install but live audio capture won't work."
+endif
+
+install-fonts:  ## Install Noto fonts for proper Devanagari/Hindi rendering in the TUI (macOS)
+ifeq ($(UNAME),Darwin)
+	@echo "Installing Noto Sans Mono + Noto Sans Devanagari via Homebrew..."
+	@brew install --cask font-noto-sans-mono font-noto-sans-devanagari 2>&1 | tail -10
+	@echo ""
+	@echo "Fonts installed. ONE MANUAL STEP — your terminal needs to use them:"
+	@echo ""
+	@echo "  Apple Terminal:  Settings > Profiles > Text > Font: change to 'Noto Sans Mono'"
+	@echo "  iTerm2:          Settings > Profiles > Text > Font: 'Noto Sans Mono'"
+	@echo "                   Enable: 'Use a different font for non-ASCII text' → Noto Sans Devanagari"
+	@echo "  Ghostty:         font-family = Noto Sans Mono   (in ~/.config/ghostty/config)"
+	@echo "  Kitty:           font_family Noto Sans Mono     (in ~/.config/kitty/kitty.conf)"
+	@echo ""
+	@echo "Why both fonts: 'Mono' covers Latin (your transcript labels);"
+	@echo "'Devanagari' covers Hindi glyphs. macOS substitutes the latter automatically"
+	@echo "for codepoints the Mono font lacks."
+else
+	@echo "[skip] install-fonts target is macOS-only (uses Homebrew casks)."
+	@echo "       On Linux, install equivalent Noto packages via your distro's package manager,"
+	@echo "       e.g.: sudo apt install fonts-noto-mono fonts-noto-core"
 endif
 
 slash-commands:  ## Install /meeting handler into every detected LLM tool
