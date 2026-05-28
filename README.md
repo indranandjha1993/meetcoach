@@ -1,642 +1,343 @@
 # meetcoach
 
-A live meeting copilot for macOS. While you're on a Zoom / Meet / Teams call (or watching a podcast, or sitting in a customer demo), meetcoach captures the audio, transcribes it with speaker labels in real-time, and lets Claude watch the conversation and chime in *only* when you tell it to — using your existing project context.
+A personal **meeting copilot** for macOS. Runs in your terminal during any Zoom / Google Meet / Teams call (or podcast, or sales call). Captures the audio, transcribes with speaker labels, and lets Claude / Gemini / Codex watch the conversation and chime in only when *you* tell it to — using your project's context.
+
+Two ways to interact:
+- **TUI** — a two-pane terminal app: live transcript on the left, a coach (Claude `-p` subprocess by default) writing short notes every 25s on the right.
+- **`/meeting` handler** — invoke from any LLM tool's chat (Claude Code, Cursor, Gemini CLI, Codex CLI). Type a free-form instruction like `"draft a reply when I'm directly asked"`, and the LLM watches the live transcript through our MCP server and only responds when your criteria match.
+
+Status: pre-alpha, personal tool. Treat coach output as drafts, not facts.
+
+---
 
 ## Who this is for
 
-You want this if you've ever wanted:
+- You want a live, speaker-labeled transcript of every meeting, persisted to a file.
+- You want an AI assistant that **stays quiet** until something specific happens — "ping me if anyone mentions Q3 budget", "summarize action items at the end", "draft replies for questions directed at me".
+- You want the assistant to **already know your project** — uses your `CLAUDE.md` / `AGENTS.md` / repo state.
+- You want all of this with your existing **Claude Max plan / Gemini account / OpenAI account** — no extra API key, no per-call billing for the LLM (Deepgram is paid; ~$0.26/hour for STT).
 
-- A live transcript of any meeting with **who said what**, persisted to a file
-- An AI assistant that **stays quiet** until something specific happens — "ping me if anyone mentions Q3 budget", "draft a reply when a question is directed at me", "summarize action items every 5 minutes"
-- An assistant that **already knows your project** — uses your CLAUDE.md, your codebase, your `.claude/` config — so when it drafts a reply about the auth refactor, it's informed
-- All of the above using your existing **Claude Max plan** — no Anthropic API key, no per-call billing
+Skip this if you need a polished consumer product, real-time *instant* responses (~1-3s floor), or non-macOS support (BlackHole is macOS-only; Linux audio capture is unimplemented).
 
-You don't want this if:
+---
 
-- You need a polished consumer product (this is a personal CLI tool, pre-alpha)
-- You need real-time *instant* responses (~1-3 second floor with MCP, longer without)
-- You don't have a Claude Max plan AND don't want to pay Deepgram for STT (~$0.26/hour)
+## Quick start
 
-## Two-minute quick start
-
-If you have Homebrew, `uv`, an LLM CLI (Claude / Gemini / Codex), and a Deepgram key:
+If you already have Homebrew, `uv`, an LLM CLI (Claude / Gemini / Codex), and a Deepgram key:
 
 ```bash
 git clone https://github.com/indranandjha1993/meetcoach.git
 cd meetcoach
-make setup            # installs deps + BlackHole + slash commands; prints next steps
+make setup                    # installs deps + BlackHole + slash handlers + MCP registration
+cp .env.example .env          # paste DEEPGRAM_API_KEY=<your_key> into it
 ```
 
-Then do the **two manual steps** the installer can't script:
+Two manual steps the installer can't do:
 
-1. **Audio MIDI Setup → Multi-Output Device** with your headphones/speakers + BlackHole. Set it as your System Settings → Sound output. ([Detailed walkthrough below](#3-create-a-multi-output-device).)
-2. **Edit `~/.claude/settings.json`** (or your tool's MCP config) to register the meetcoach MCP server:
-   ```bash
-   make register-mcp     # prints the JSON snippet to paste
-   ```
+1. **Audio MIDI Setup** → create a Multi-Output Device with your headphones/speakers + BlackHole. Set it as System Settings → Sound → Output. (Detail in [§ Full setup](#full-setup-fresh-mac).)
+2. Optional: `make register-mcp` if `make setup` didn't auto-detect your LLM tools.
 
-And paste your Deepgram key:
+Verify and run:
+
 ```bash
-cp .env.example .env       # then put DEEPGRAM_API_KEY=... in it
+make doctor                   # green dots = ready
+make start                    # opens the TUI (or `make listen` to skip mic capture)
 ```
 
-Verify and start:
-```bash
-make doctor
-make start                 # or `make listen` for solo audio (no mic)
-```
+> **Linux / WSL:** `make install`, `make slash-commands`, `make register-mcp`, and the `/meeting` handler all work. Live audio capture doesn't yet — BlackHole is macOS-only and the PulseAudio/PipeWire backend isn't implemented.
 
-`make` (with no arguments) lists every command — `setup`, `start`, `listen`, `doctor`, `register-mcp`, `prompt`, `lint`, `clean`, `update`, etc.
+---
 
-Jump to [Your first meeting](#your-first-meeting) for the end-to-end walkthrough.
+## Full setup (fresh Mac)
 
-> **Linux / WSL:** the Makefile is cross-platform but live audio capture isn't yet — BlackHole is macOS-only. `make install`, `make slash-commands`, `make doctor` (without audio devices), and the MCP server / `/meeting` slash command in your LLM tool all work on Linux today. Live transcription needs a PulseAudio/PipeWire backend that's planned but not yet shipped.
-
-## Requirements
-
-- macOS (uses BlackHole as a virtual audio driver for system loopback)
-- Python 3.13 (`brew install python@3.13` or via `uv`)
-- [`uv`](https://docs.astral.sh/uv/) — `brew install uv`
-- [Claude Code](https://docs.claude.com/en/docs/claude-code) — the `claude` binary on PATH (uses your Claude Max plan; no Anthropic API key needed)
-- A Deepgram API key — free tier at https://deepgram.com gives $200 of credit (~750 hours at Nova-3 streaming pricing)
-
-## Setup on a fresh Mac
-
-For most users, `make setup` runs steps 1, 2, and 5 in one shot. The detailed walkthrough below is for understanding what's happening, and for steps that can't be automated (the Multi-Output Device GUI in §3, the API key in §4, and the MCP server registration in §6).
+`make setup` chains the first three steps. The rest are manual or one-time configuration. If you just ran `make setup`, jump to step 4.
 
 ### 1. Clone and install Python deps
 
 ```bash
 git clone https://github.com/indranandjha1993/meetcoach.git
 cd meetcoach
-make install                  # or: uv venv --python 3.13 && uv pip install -e .
+make install                  # uv venv --python 3.13 && uv pip install -e .
 ```
 
-(SSH users: `git clone git@github.com:indranandjha1993/meetcoach.git`.)
+Requires: macOS, Python 3.13, [`uv`](https://docs.astral.sh/uv/) (`brew install uv`), and at least one of: Claude Code, Gemini CLI, Codex CLI.
 
 ### 2. Install BlackHole
 
-BlackHole is a kernel-level virtual audio driver that lets us capture system audio. Install needs an admin password.
+Kernel-level virtual audio driver. Install needs your admin password.
 
 ```bash
-make audio-setup              # or: brew install --cask blackhole-2ch && sudo killall coreaudiod
+make audio-setup              # brew install --cask blackhole-2ch && sudo killall coreaudiod
 ```
 
-### 3. Create a Multi-Output Device
+### 3. Create a Multi-Output Device (one-time, GUI)
 
-This lets you *hear* meeting audio normally *and* simultaneously route a copy into BlackHole for capture.
+So you can both *hear* meeting audio *and* mirror it into BlackHole for capture.
 
-1. Open **Audio MIDI Setup** (Spotlight: `audio midi`)
-2. Click the **+** at the bottom-left → **Create Multi-Output Device**
-3. In the right pane, check **Use** for both your usual output (headphones or speakers) AND **BlackHole 2ch**
-4. Set **Primary Device** (top dropdown) to your usual output, NOT BlackHole — BlackHole is virtual and shouldn't drive the clock
-5. Tick **Drift Correction** on **BlackHole 2ch** only
-6. Double-click the device name in the left list and rename it (e.g. `Meeting Capture`)
+1. Open **Audio MIDI Setup** (Spotlight: `audio midi`).
+2. Click the **+** at the bottom-left → **Create Multi-Output Device**.
+3. Check **Use** for both **BlackHole 2ch** and your real output (headphones/speakers).
+4. Set **Primary Device** to your real output (not BlackHole — it's virtual).
+5. Tick **Drift Correction** on **BlackHole 2ch** only.
+6. Rename it (e.g. `Meeting Capture`) by double-clicking the device name.
 
-**To activate for a meeting:** System Settings → Sound → Output → select your new device. Audio plays through your speakers/headphones normally; BlackHole receives a copy.
+**Activate before each meeting:** System Settings → Sound → Output → select your Multi-Output Device.
 
-> Caveat: if you have non-3.5mm headphones (USB-C, Bluetooth, USB) plugged in and you also include **MacBook Pro Speakers** in the Multi-Output group, you'll hear from both. Include only the output you're actively using.
+> If you have USB / Bluetooth headphones AND `MacBook Pro Speakers` both in the group, you'll hear from both. Include only the output you're using.
 
-### 4. Configure your API key
+### 4. Configure the Deepgram API key
 
 ```bash
 cp .env.example .env
+# then edit .env, paste:  DEEPGRAM_API_KEY=your_key_here
 ```
 
-Open `.env` and paste your Deepgram key:
+Get a free key at https://deepgram.com — $200 credit, ~750 hours of dual-channel transcription.
 
-```
-DEEPGRAM_API_KEY=your_key_here
-```
+Optional env overrides:
+- `COACH_PROVIDER=claude|gemini|codex` — default coach LLM
+- `COACH_MODEL=claude-haiku-4-5` — model passed to the coach CLI
+- `COACH_BIN=/full/path` — override binary path
 
-Optional overrides:
-
-```
-CLAUDE_BIN=/full/path/to/claude       # if `claude` isn't on PATH
-COACH_MODEL=claude-haiku-4-5          # passed to claude -p --model
-```
-
-### 5. Install the `/meeting` handler into your LLM tool(s)
+### 5. Install the `/meeting` handler in your LLM tool(s)
 
 ```bash
-make slash-commands           # or: ./scripts/install-slash-commands.sh
+make slash-commands
 ```
 
-Auto-detects which LLM tools you have installed (Claude Code, Cursor, Gemini CLI, Codex CLI) and symlinks the `/meeting` handler into each tool's **on-demand command/skill directory** — never into a project memory file (`CLAUDE.md` / `GEMINI.md` / `.cursorrules` / `AGENTS.md`), so there's no always-loaded context pollution.
+Auto-detects Claude Code, Cursor, Gemini CLI, Codex CLI — installs `/meeting` (or its skill-format equivalent) into each tool's **on-demand command/skill directory**, never into a memory file (`CLAUDE.md`, `GEMINI.md`, etc.). Your project memory stays clean.
 
-Other commands:
-
-```bash
-./scripts/install-slash-commands.sh --list             # show what's detected, don't install
-./scripts/install-slash-commands.sh --platform claude  # install to one specific tool
-./scripts/install-slash-commands.sh --platform cursor  # same, for Cursor
-./scripts/install-slash-commands.sh --platform gemini  # same, for Gemini CLI
-./scripts/install-slash-commands.sh --platform codex   # same, for Codex CLI
-```
-
-Symlinks (not copies), so any edits to `share/skills/meeting/SKILL.md` or `share/slash-commands/meeting.md` flow through everywhere immediately.
-
-See [Using `/meeting` in other LLM tools](#using-meeting-in-other-llm-tools) below for paste-only setups (Antigravity / VS Code Copilot Chat / anything we don't auto-install for).
-
-### 6. Register the meetcoach MCP server with your LLM tools
-
-The `/meeting` slash command needs the `meetcoach-mcp` server registered in **each** LLM tool's config — Claude Code, Cursor, Gemini CLI, and Codex CLI all use it independently. Each tool stores MCP config in its own file/format:
-
-| Tool | Config file | Registration mechanism |
-|---|---|---|
-| Claude Code | `~/.claude.json` → `mcpServers.<name>` | `claude mcp add -s user ...` |
-| Gemini CLI | `~/.gemini/settings.json` → `mcpServers.<name>` | `gemini mcp add -s user ...` |
-| Codex CLI | `~/.codex/config.toml` → `[mcp_servers.<name>]` | `codex mcp add ... -- <bin>` |
-| Cursor | `~/.cursor/mcp.json` → `mcpServers.<name>` | merge JSON (no CLI) |
-
-You don't need to know any of that:
+### 6. Register the MCP server with your LLM tool(s)
 
 ```bash
 make register-mcp
 ```
 
-Auto-detects every tool installed on your machine and registers meetcoach with each (using the right command / writing to the right file). Idempotent — re-runs are clean no-ops, won't double-add.
+Auto-detects each installed tool and registers the `meetcoach-mcp` server using that tool's native mechanism:
 
-Verify:
+| Tool | Mechanism | Stored at |
+|---|---|---|
+| Claude Code | `claude mcp add -s user ...` | `~/.claude.json` |
+| Gemini CLI | `gemini mcp add -s user ...` | `~/.gemini/settings.json` |
+| Codex CLI | `codex mcp add ... -- <bin>` | `~/.codex/config.toml` |
+| Cursor | merge JSON (no CLI) | `~/.cursor/mcp.json` |
+
+Idempotent — re-runs are no-ops.
+
+### 7. Verify
 
 ```bash
 make doctor
 ```
 
-Look for the `MCP server` group — every detected tool should show ✓ registered.
+Every group should be green. Run `meetcoach doctor --verbose` to get copy-paste fix instructions for any item that isn't.
 
-> Note: Claude stores MCP config in `~/.claude.json` (not `~/.claude/settings.json` — that's plugin config). `claude mcp add` writes to the right place automatically; don't hand-edit.
+---
 
-### 7. Verify everything
+## Using it
+
+### The TUI
 
 ```bash
-make doctor                   # or: .venv/bin/meetcoach doctor
+make start                    # mic + system audio
+make listen                   # system audio only (good for solo testing)
 ```
 
-Expected output:
+Top bar: live indicators for Audio / STT / Coach / MCP. Right-hand pane is the auto-coach (default: `claude -p` every 25s, returns short notes or "PASS").
 
-```
-✓ BlackHole found at device index 0
-✓ Default mic at device index 1
-✓ claude CLI at /opt/homebrew/bin/claude
-✓ DEEPGRAM_API_KEY set — using Deepgram streaming STT
-```
+**Hotkeys:**
 
-## How the coach actually works
+- `a` — ask the coach a question now (opens a centered modal)
+- `m` — mute / unmute the mic mid-session
+- `s` — cycle coach provider through installed CLIs
+- `r` — reconnect Deepgram (drop + reopen the STT websockets)
+- `p` — pause / resume the auto coach
+- `c` — clear the coach pane
+- `?` — full status detail (every capability + fix steps)
+- `q` — quit
 
-There are **two independent coach paths**, and you can use them at the same time or separately. They're different and serve different purposes — this is the most common point of confusion.
+For everything else (reinstall slash handlers, copy MCP config, open transcripts folder, show the `/meeting` prompt body), press the **Textual command palette** (`Ctrl+\` by default). Type to filter.
 
-### Path A — the TUI auto-coach (LLM CLI subprocess)
+### `/meeting` in other LLM tools
 
-The Textual TUI's right-hand pane. It fires automatically every 25 seconds. Mechanism:
+**The invocation mechanism differs per tool.** Slash commands aren't universal.
 
-```
-TUI tick (every 25s)
-  ├── if new transcript lines exist
-  └── spawn `<provider CLI>` with coach instructions + rolling transcript
-       └── LLM responds with bullets OR literal "PASS"
-            └── if not PASS, write to Coach pane
-```
-
-**Pick your LLM provider** with `--coach-provider`:
-
-| Provider | CLI | Install | Default model |
-|---|---|---|---|
-| `claude` *(default)* | `claude` (Claude Code) | https://docs.claude.com/en/docs/claude-code | Your Max plan's default (Sonnet 4.6 / Opus 4.7) |
-| `gemini` | `gemini` (Google's CLI) | `npm install -g @google/gemini-cli` | Whatever `gemini` defaults to |
-| `codex` | `codex` (OpenAI's CLI) | `npm install -g @openai/codex` | Whatever `codex exec` defaults to |
-
-`meetcoach start --coach-provider gemini --model gemini-2.5-flash` overrides at launch. If the chosen provider's CLI isn't installed, meetcoach fails fast at startup with an install hint. Run `meetcoach doctor` to see which providers are available on your machine.
-
-- **Where it runs**: a subprocess of meetcoach. Each tick is a fresh CLI invocation.
-- **Cost**: $0 per call for `claude` (uses your Max plan). Other providers depend on their billing — Gemini CLI uses your Google AI account, Codex uses your OpenAI account.
-- **Project context**: gets nothing automatic. It only sees what you pass — by default just the transcript + coach instructions.
-- **Use when**: you want passive monitoring with built-in bullet-style coaching, displayed alongside the live transcript in one terminal.
-
-You can also press `[a]` in the TUI to ask the LLM an on-demand question about the meeting so far — same subprocess path, different system prompt.
-
-### Path B — the `/meeting` slash command (Claude Code + MCP)
-
-You run this **inside a `claude` session in any project directory**. It subscribes to the live transcript via the meetcoach MCP server and watches with custom criteria.
-
-```
-You: /meeting only draft a reply if a question is directed at me
-       │
-       ▼
-Claude Code agent (in your project)
-  ├── mcp__meetcoach__get_state         (is meetcoach running?)
-  ├── mcp__meetcoach__read_transcript   (baseline)
-  └── mcp__meetcoach__wait_for_new_lines(since_index=N, timeout=60)
-      └── (server blocks until new lines arrive)
-       └── evaluate against your instruction
-           └── respond inline OR stay silent
-            └── loop
-```
-
-- **Which LLM**: whatever model your `claude` session is using (matches the model shown at the bottom of Claude Code).
-- **Where it runs**: in your already-open `claude` session, with full Claude Code agent capabilities (Read, Bash, MCP tools, etc.).
-- **Cost**: $0 per call (uses your Max plan).
-- **Project context**: **everything Claude Code sees** — `CLAUDE.md`, `.claude/` config, file Reads, project-scoped MCP servers. Use the instruction to leverage it: *"...relevant to the auth refactor we're working on"*.
-- **Use when**: you want criteria-driven, project-aware responses *inside the project context you're already working in*, not a generic monitoring pane.
-
-### Which one should I use?
-
-| Situation | Recommended path |
+| Tool | How you invoke it |
 |---|---|
-| Listening to a podcast / news / video alone, just want transcript + occasional bullets | Path A (TUI only) |
-| In a meeting with no specific project context, just want "tell me what's going on" | Path A (TUI) |
-| In a meeting *about* a specific project, want Claude to draft replies using project context | Path B (`/meeting` in that project's `claude` session) |
-| Want both passive monitoring AND project-aware responses | Both — they're independent |
+| **Claude Code** | `/meeting <instruction>` — direct slash command ✓ |
+| **Cursor** | `/meeting <instruction>` — direct skill invocation ✓ |
+| **Gemini CLI** | Natural-language prompt (skill auto-invokes from description match) |
+| **Codex CLI** | Natural-language prompt (same — Codex reserves `/` for built-in commands) |
 
-## Using `/meeting` in other LLM tools
+In Claude Code / Cursor:
 
-The `/meeting` handler works in any LLM tool that supports MCP. The installer auto-detects four common ones and installs to each — but **the invocation mechanism differs per tool**:
+```
+/meeting only draft a reply if a question is directed at me; otherwise just briefly tell me what's being discussed
+/meeting alert me if anyone mentions Q3 roadmap, deadlines, or budget
+/meeting transcribe what's relevant to the auth refactor we're working on; ignore everything else
+```
 
-| Tool | Auto-installed to | Invocation |
-|---|---|---|
-| **Claude Code** | `~/.claude/commands/meeting.md` | `/meeting <instruction>` — direct slash command |
-| **Cursor** | `~/.cursor/skills-cursor/meeting/SKILL.md` | `/meeting <instruction>` — direct skill invocation |
-| **Gemini CLI** | `~/.gemini/skills/meeting/SKILL.md` | **Natural language** — auto-invokes when your prompt mentions watching/following/monitoring a meeting/call/podcast |
-| **Codex CLI** | `~/.codex/skills/meeting/SKILL.md` | **Natural language** — same. Codex's `/` syntax is reserved for built-in commands (`/help`, `/clear`); custom skills auto-invoke from description match |
-
-**Why the difference**: Claude Code and Cursor support user-invoked slash commands. Gemini and Codex skills are auto-invoked by the model when the prompt description matches. The slash command does work, just through a different mechanism.
-
-**Examples that auto-invoke the skill in Codex / Gemini:**
+In Gemini CLI / Codex CLI, **describe what you want — the skill will auto-invoke**:
 
 ```
 > watch the live meeting and tell me what's being discussed
-> follow this call and alert me if anyone asks me a direct question
+> follow this call and alert me if I'm directly asked a question
 > use the meeting skill to summarize action items as they come up
 > monitor the podcast transcript and flag anything about pricing
 ```
 
-**Critical:** every install path above is an **on-demand** command/skill directory, never an always-loaded memory file (`CLAUDE.md`, `GEMINI.md`, `.cursorrules`, `AGENTS.md`). Your project's memory stays clean — the handler only loads when invoked.
+Stop the watcher with `Ctrl+C` or by saying "stop watching".
 
-You still need to **register the meetcoach MCP server** with each tool (see [Setup §6](#6-register-the-meetcoach-mcp-server-with-claude-code) for Claude — same idea for others, but each tool stores MCP server config in its own place):
+The MCP server (`meetcoach-mcp`) is the same for every tool — it exposes `get_state`, `read_transcript`, `wait_for_new_lines` so the LLM doesn't have to poll. One subscription call per turn instead of `sleep 15` + `tail` every 15s.
 
-- **Claude Code**: `~/.claude/settings.json` `mcpServers` block
-- **Cursor**: `~/.cursor/mcp.json` or Settings → MCP Servers
-- **Gemini CLI**: `gemini mcp add meetcoach /full/path/to/meetcoach-mcp`
-- **Codex CLI**: `~/.codex/config.toml` `[mcp_servers.meetcoach]` section
+### Workflow recipes
 
-### For tools we don't have an installer for (Antigravity, VS Code Copilot Chat, anything else)
-
-The prompt body is platform-agnostic. Get it with:
-
-```bash
-meetcoach prompt | pbcopy        # copies the prompt body to your clipboard
-meetcoach prompt --raw           # includes the skill frontmatter
-```
-
-Paste it into whatever the tool calls its "custom command" / "instruction" / "skill" mechanism. Then register the MCP server using whatever config that tool uses.
-
-If the tool has no on-demand command mechanism at all, you can paste `meetcoach prompt` content inline whenever you want to invoke the watcher — works, just less ergonomic.
-
-## Your first meeting
-
-End-to-end walkthrough of a real standup.
-
-**Before the meeting (60 seconds):**
-
-System Settings → Sound → Output → **Meeting Capture** (the Multi-Output Device you set up in §3).
-
-**Terminal A — launch meetcoach:**
-
-```bash
-cd /Users/yourname/Developer/personal/meetcoach
-.venv/bin/meetcoach start \
-  --mic-label "Indranand" \
-  --names "Vinay,Priya,Sam"
-```
-
-The TUI opens. Left pane will fill with transcript lines as people speak. Right pane will show coach output (bullets when something's worth flagging, silent otherwise).
-
-**Terminal B — if you want project-aware help:**
-
-```bash
-cd /Users/yourname/Developer/personal/myproject
-claude
-```
-
-Inside `claude`:
-
-```
-/meeting draft a reply if anyone asks me about the auth refactor; otherwise just track action items I should follow up on
-```
-
-Now you join the actual meeting in your browser / Zoom / Teams app. Both panes update live.
-
-**During the meeting:**
-
-- Speak normally; the TUI shows `Indranand: <your words>` in cyan, others in yellow/green/etc.
-- If someone says "Indranand, can you push that PR by EOD?", a few seconds later your Terminal B chat shows Claude's drafted reply in quotes.
-- TUI's Coach pane will surface bullets every 25s if anything notable happened (a question directed at you, a factual error, an action item to capture).
-- Press `[a]` in the TUI any time to ask Claude something directly: *"what did Vinay say about the migration timeline?"*
-
-**After the meeting:**
-
-- Press `[q]` in the TUI to quit.
-- Transcript is at `transcripts/meeting-<timestamp>.txt`.
-- The symlink at `~/.meetcoach/current.txt` still points at it, so you can still `@~/.meetcoach/current.txt` from any `claude` session afterward to ask follow-up questions.
-
-## Workflow recipes
-
-Common patterns. Steal whichever fits.
-
-### Solo listening (podcast, YouTube, news)
-
-```bash
-.venv/bin/meetcoach start --no-mic
-```
-
-`--no-mic` avoids the mic-bleed echo (your mic picking up the speaker audio and double-transcribing it as `You:`). No project context needed; the TUI is enough.
-
-### Small team standup (3-5 people)
-
-```bash
-.venv/bin/meetcoach start \
-  --mic-label "Indranand" \
-  --names "Vinay,Priya,Sam"
-```
-
-In your project's `claude`:
-
-```
-/meeting flag any commitment I make or any direct question to me; stay silent otherwise
-```
-
-### Large all-hands (listen-only, just want notes)
-
-```bash
-.venv/bin/meetcoach start --no-mic
-```
-
-In any `claude` session:
-
-```
-/meeting alert me if anyone mentions Q3 roadmap, budget, hiring, or the migration; summarize action items at the end
-```
-
-### 1-on-1 with manager
-
-```bash
-.venv/bin/meetcoach start \
-  --mic-label "Indranand" \
-  --names "Manager"
-```
-
-In your project's `claude`:
-
-```
-/meeting after I'm asked about my progress, suggest a 2-sentence answer using my recent commits and the CLAUDE.md context
-```
-
-### Customer demo / sales call
-
-```bash
-.venv/bin/meetcoach start \
-  --mic-label "Indranand" \
-  --names "Customer"
-```
-
-In a sales-notes project's `claude`:
-
-```
-/meeting capture customer objections, feature requests, and pricing questions; ignore my product pitch
-```
-
-### Post-meeting follow-ups
-
-After quitting meetcoach, the transcript stays at `~/.meetcoach/current.txt`. In any `claude` session:
-
-```
-@~/.meetcoach/current.txt summarize the meeting in 5 bullets, list action items by owner
-```
-
-Claude reads the file and answers. No live polling, just one-shot reference.
-
-## Usage
-
-### Terminal A — start capturing
-
-```bash
-.venv/bin/meetcoach start
-```
-
-The Textual TUI opens with a status bar at the top, two panes, and a footer. The status bar shows live indicators for each capability group (Audio / STT / Coach / MCP) — green dot = working, red dot = broken, yellow = degraded, grey = disabled.
-
-If anything is broken at launch (e.g., missing Deepgram key, MCP not registered), a **readiness modal** pops up listing each problem with copy-paste fix instructions. Pick `Continue anyway`, `Show full status`, or `Quit`.
-
-Hotkeys:
-
-- `a` — ask Claude an on-demand question about the meeting so far
-- `m` — mute / unmute the mic mid-session
-- `s` — switch coach provider (cycles installed Claude / Gemini / Codex)
-- `r` — reconnect Deepgram (drop + reopen the STT websockets)
-- `p` — pause / resume the auto coach
-- `c` — clear the coach pane
-- `?` — show full status detail (every capability with state + fix steps)
-- `q` — quit
-
-For everything else (reinstall slash command, copy MCP config to clipboard, open transcripts folder, show /meeting prompt, re-run capability scan), press the **command palette** key (`Ctrl+\` by default in Textual; `Ctrl+P` on some configs). Type to filter — every action the CLI exposes is reachable from there.
-
-The active session's transcript is saved to `transcripts/meeting-<timestamp>.txt` and a stable symlink at `~/.meetcoach/current.txt` is repointed to it on every launch.
+| Use case | Command |
+|---|---|
+| Solo podcast / YouTube (avoid mic-bleed) | `make listen` |
+| Standup with named teammates | `meetcoach start --mic-label "Indranand" --names "Vinay,Priya,Sam"` |
+| All-hands, just want notes | `make listen` + `/meeting capture action items, summarize at end` |
+| 1-on-1 with manager | `meetcoach start --names "Manager"` + `/meeting after I'm asked about progress, suggest a 2-sentence answer using CLAUDE.md context` |
+| Customer call / demo | `meetcoach start --names "Customer"` + `/meeting capture objections, pricing questions, feature requests` |
+| Post-meeting follow-up | Quit meetcoach, then in any `claude` session: `@~/.meetcoach/current.txt summarize this meeting in 5 bullets, list owners` |
 
 ### Speaker labels
 
-By default the transcript uses `You:` for your mic and `Speaker-0:` / `Speaker-1:` / … for remote participants (Deepgram Nova-3 does diarization on the system-audio channel and assigns a stable ID to each distinct voice).
-
-Personalize with two flags:
+By default the transcript uses `You:` for your mic and `Speaker-0:` / `Speaker-1:` / … for remote participants. Personalize:
 
 ```bash
-.venv/bin/meetcoach start \
+meetcoach start \
   --mic-label "Indranand" \
   --names "Vinay,Priya,Sam"
 ```
 
-Result in the transcript:
-- Your mic becomes `Indranand:`
-- The first remote speaker to talk becomes `Vinay:`, the second `Priya:`, the third `Sam:`
-- A fourth remote speaker (no name supplied) falls back to `Speaker-3:`
+Names are assigned first-seen-first, not persisted. Re-launch with different `--names` order if join sequence changes.
 
-Mapping is first-seen-wins per session and not persisted, so if speakers join in a different order next time you'll need to adjust the `--names` order.
+---
 
-## CLI reference
+## How it works
 
-For most operations, the **Makefile is the recommended interface** (run `make` with no args to list every target). The underlying CLI is below for transparency and for cases where you need flags Make doesn't pass through.
+```
+   Mic                       BlackHole
+    │                            │
+    ▼                            ▼
+   ┌──── sounddevice (callback thread) ────┐
+   │  DualCapture → asyncio.Queue          │
+   └────────────────────┬──────────────────┘
+                        │  int16 PCM @ 16kHz
+                        ▼
+        Deepgram Nova-3 streaming (raw websocket per source)
+            mic source:    language=multi, no diarize → "you"
+            system source: language=multi, diarize=true → "speaker-N"
+                        │
+                        ▼
+            SpeakerLabeler  (maps to --mic-label / --names)
+                        │
+        ┌───────────────┴───────────────┐
+        ▼                               ▼
+   transcripts/meeting-<ts>.txt   ~/.meetcoach/current.txt  (stable symlink)
+        │                               │
+   ┌────┴──────────┐         ┌──────────┴──────────┐
+   ▼               ▼         ▼                     ▼
+  TUI panes   coach.py    meetcoach-mcp     /meeting handler
+                │         (MCP server)      in any LLM tool
+            claude/gemini/codex -p          (subscribes to current.txt
+            subprocess every 25s            via MCP, responds per
+            (also: [a] on-demand)           user's instruction)
+```
+
+**Why Deepgram Nova-3 over Flux?** Nova-3 is Deepgram's recommended model for multi-speaker meetings (better noise / crosstalk robustness; Flux is built for voice agents). `diarize=true` gives us per-speaker IDs out of the box. We talk to the v1 listen endpoint directly because `deepgram-sdk`'s `nova-3 language=multi` path hangs on connect — bug in the Python SDK, not the API.
+
+**Why CLI subprocess for the auto-coach instead of the Anthropic SDK?** Uses your Claude Max plan (or Gemini / OpenAI account), no API key, no per-call billing. ~300ms subprocess spawn overhead per 25s tick — negligible.
+
+**Why MCP for `/meeting` instead of `tail -f`?** The bash polling pattern made the LLM tool's chat noisy (visible `Bash(sleep 15...)` every 15s) and added 0-15s latency between a new transcript line and the agent seeing it. `wait_for_new_lines` blocks server-side and returns the moment new content arrives — one quiet tool call per cycle, sub-second latency.
+
+---
+
+## Reference
 
 ### Make targets
 
+Run `make` (no args) for the live list.
+
 ```
-make setup            First-time bootstrap (install + audio + slash commands)
-make install          Create the .venv and install meetcoach + deps
+make setup            First-time bootstrap (install + audio + slash commands + MCP)
+make install          Create the .venv and install deps
 make audio-setup      Install BlackHole + restart Core Audio (macOS only)
-make slash-commands   Install /meeting into every detected LLM tool
-make register-mcp     Print the MCP JSON snippet to paste into your tool's config
+make slash-commands   Install /meeting handler into every detected LLM tool
+make register-mcp     Register meetcoach-mcp with every detected LLM tool
 make doctor           Sanity-check the environment
 make start            Launch the live TUI
 make listen           Launch the TUI in listen-only mode (no mic)
-make mcp              Run the MCP server in the foreground (debug)
+make mcp              Run the MCP server in foreground (debug)
 make prompt           Print the /meeting prompt body to stdout
-make prompt-copy      Copy the /meeting prompt to your clipboard
+make prompt-copy      Copy the /meeting prompt to clipboard
 make lint             Run ruff linter
 make format           Auto-format with ruff
-make clean            Remove venv and caches (keeps .env and transcripts)
+make clean            Remove venv and caches (keeps .env and transcripts/)
 make update           git pull + reinstall
 ```
 
-### Direct CLI
+### CLI flags (for `meetcoach start`)
 
 ```
-meetcoach devices       List input audio devices
-meetcoach doctor        Sanity-check the environment (BlackHole, mic, providers, MCP)
-meetcoach prompt        Print the /meeting prompt body to stdout (paste into other LLM tools)
-meetcoach start         Launch the TUI
-
-Common flags for `start`:
-  --mic <name|index>             Override default mic (substring match works)
-  --system <name|index>          Override system-audio device (default: BlackHole)
-  --no-mic                       Skip mic capture (use system audio only)
-  --no-system                    Skip system-audio capture (mic only)
-  --mic-label NAME               Label for your mic in the transcript (default: "You")
-  --names "N1,N2,..."            Names for remote speakers, first-seen-wins assignment
-  --interval <seconds>           Coach tick interval (default: 25)
-  --coach-provider <name>        LLM CLI to use: claude (default), gemini, codex
-  --coach-bin <path>             Override the binary path for the chosen provider
-  --model <name>                 Model name passed through to the coach CLI
-  --engine deepgram|whisper      Force STT backend (default: auto-detect from env)
-
-Env-var overrides (read from .env):
-  DEEPGRAM_API_KEY               Required for Deepgram STT
-  COACH_PROVIDER                 claude | gemini | codex
-  COACH_BIN                      Absolute path to the coach CLI binary
-  COACH_MODEL                    Default model name passed to the coach CLI
-
-meetcoach-mcp           Launch the MCP server (used by Claude Code, not by you directly)
+--mic <name|index>          Override default mic (substring match works)
+--system <name|index>       Override system-audio device (default: BlackHole)
+--no-mic                    Skip mic capture
+--no-system                 Skip system-audio capture
+--mic-label NAME            Label for your mic in the transcript (default: "You")
+--names "A,B,C"             Names for remote speakers, first-seen-wins assignment
+--interval <seconds>        Coach tick interval (default: 25)
+--coach-provider <name>     LLM CLI to use: claude (default), gemini, codex
+--coach-bin <path>          Override the binary path for the chosen provider
+--model <name>              Model passed to the coach CLI
+--engine deepgram|whisper   Force STT backend (default: auto from env)
 ```
 
-## How it works (under the hood)
+### Cost (rough)
 
-```
-  Mic               BlackHole
-   │                    │
-   ▼                    ▼
-  ┌────── sounddevice (callback thread) ──────┐
-  │ DualCapture → asyncio.Queue[AudioChunk]   │
-  └────────────────────┬──────────────────────┘
-                       │  int16 PCM @ 16kHz
-                       ▼
-        Deepgram Nova-3 streaming (raw websocket per source)
-                       │  • mic source: language=multi, no diarize → speaker="you"
-                       │  • system source: language=multi + diarize=true
-                       │      → per-word speaker IDs split into "speaker-N"
-                       ▼
-            SpeakerLabeler (maps to mic_label / --names)
-                       │
-        Transcript log  +  ~/.meetcoach/current.txt
-                       │
-       ┌───────────────┼─────────────────────────────────┐
-       ▼               ▼                                 ▼
-   TUI panes      claude -p subprocess        meetcoach-mcp (MCP server)
-       │          (auto coach in TUI)                    │
-   Coach pane                                  /meeting slash command
-                                              in Claude in your project
-                                              (wait_for_new_lines blocks
-                                               server-side; no polling)
-```
-
-**Why Nova-3 streaming with raw websockets instead of the SDK?** Deepgram recommends Nova-3 specifically for multi-speaker meeting transcription (better noise/crosstalk robustness than the Flux conversational model), and `diarize=true` gives us per-speaker IDs out of the box. We talk to the v1 listen endpoint directly because the `deepgram-sdk`'s `nova-3 language=multi` path hangs silently on connect — bug in the Python SDK, not the API itself.
-
-**Why a `claude -p` subprocess instead of the Anthropic SDK?** Uses your Claude Max plan, no API key needed, no per-call billing. We accept the ~300ms subprocess overhead for $0 billing.
-
-**Why an MCP server for the slash command instead of `tail -f`?** A bash polling loop in the slash command made the Claude Code chat a wall of `Bash(sleep 15...)` blocks every 15s, and added 0-15s of latency between a new transcript line and the agent seeing it. The MCP server's `wait_for_new_lines` blocks server-side and returns the moment new content arrives — one clean tool call per cycle, sub-second latency.
-
-## Cost
-
-For a typical 1-hour meeting:
-
-| Component | Cost |
+| Component | Per hour |
 |---|---|
-| Deepgram Nova-3 streaming + diarize | ~$0.0043/min × 60 min × 2 channels (mic + system) ≈ **$0.52** |
-| Claude (TUI coach, 25s ticks) | **$0** (Claude Max plan) |
-| Claude (`/meeting` slash command) | **$0** (Claude Max plan) |
-| **Total per hour** | **~$0.52** |
+| Deepgram Nova-3 streaming + diarize (system audio) | ~$0.26 |
+| Mic channel (if `--no-mic` not set) | ~$0.26 |
+| Claude / Gemini / Codex coach | $0 (uses your existing subscription) |
+| **Total typical hour** | **~$0.26 (listen-only) to ~$0.52 (with mic)** |
 
-If you only use system audio (start with `--no-mic`), that halves to ~$0.26/hour.
+### Troubleshooting
 
-Deepgram's free tier gives $200 credit ≈ 750 hours of dual-channel transcription before you need to add a payment method.
+**Transcript labels things as `You:` when only system audio is playing.** Your mic is picking up the meeting from your speakers. Wear headphones, launch with `--no-mic`, or press `[m]` in the TUI to mute mid-session.
 
-## FAQ
+**Two teammates merge into one speaker, or one teammate splits into two.** Deepgram's streaming diarization is ~80-90% accurate on clean 3-5 speaker audio, lower on noisy / similar-voice / crosstalk-heavy calls. Not a meetcoach bug; restart the session to reset the speaker mapping.
 
-**Q: Why does the transcript say I'm speaking when I'm not?**
-A: Your mic is picking up the meeting audio playing through your laptop speakers and double-transcribing it as `You:`. Either wear headphones (mic only hears your real voice), launch with `--no-mic`, or press `[m]` in the TUI to mute mid-session.
+**`BlackHole not found` after install.** Core Audio hasn't picked up the driver. `sudo killall coreaudiod` or reboot.
 
-**Q: Two of my teammates are getting merged into one speaker ID, or one teammate is getting split into two. Can I fix this?**
-A: Not really. That's Deepgram's streaming diarization — ~80-90% accurate on clean 3-5 speaker audio, lower on noisy / similar-voice / crosstalk-heavy calls. The only architectural fix is a post-meeting batch re-diarization pass (e.g., pyannote.audio on the saved transcript audio), which is overkill for live use.
+**YouTube/meeting tab hangs "loading" when you switch system output.** Reload the tab. Browsers cache audio device at page load.
 
-**Q: I'm in a meeting and the `/meeting` slash command says "meetcoach isn't running."**
-A: You haven't started meetcoach in Terminal A yet, or you killed it. The slash command reads `~/.meetcoach/current.txt`, which only exists while meetcoach is running. Start it, then re-invoke `/meeting`.
+**`/meeting` returns "Unrecognized command" in Codex/Gemini.** Those tools don't support user-invoked slash commands for custom skills — they auto-invoke from natural-language prompts. See [§ Using it](#meeting-in-other-llm-tools). Use a phrase like `"watch the meeting and ..."` instead.
 
-**Q: Does the `/meeting` watcher have access to my MCP servers / subagents / skills in the project?**
-A: The slash command's `allowed-tools` includes `mcp__meetcoach__*` plus `Bash` and `Read`. Other tools (other MCP servers, subagents from `.claude/agents/`, skills, Edit, Write) are deliberately not allowed in the watch loop. If you want full project-tool access during the watch, edit `share/slash-commands/meeting.md` and remove or extend the `allowed-tools` line, then re-symlink with `./scripts/install-slash-commands.sh`.
+**Coach pane stays empty.** Auto coach only fires every 25s and stays silent when nothing is notable. Press `[a]` and ask directly to verify the LLM CLI is wired. If it errors, run `meetcoach doctor` and check the Coach group.
 
-**Q: I have multiple projects. Do I need to install meetcoach in each one?**
-A: No. meetcoach itself is installed once. The slash command is user-scoped at `~/.claude/commands/meeting.md` (a symlink into this repo) and works in any project's `claude` session. The MCP server is registered once in `~/.claude/settings.json` and is available globally. The only thing that's per-project is whatever's in each project's `CLAUDE.md` / `.claude/` config, which the `/meeting` agent picks up automatically.
+**Capability bar shows red MCP.** Run `make register-mcp` — registers with every installed tool and re-runs are no-ops. Check `make doctor` afterward.
 
-**Q: Can I use this with Anthropic API key instead of Claude Max?**
-A: Not as-shipped. The TUI auto-coach can use Claude / Gemini / Codex via their CLIs (see `--coach-provider`), but `claude` specifically uses your Max plan, not the API. The `/meeting` slash command always runs in a Claude Code session, which itself uses your Max plan. If you want to bypass Max, the cleanest path is to use `--coach-provider gemini` or `--coach-provider codex` for the TUI auto-coach (which use Google/OpenAI accounts respectively), and accept that `/meeting` still needs Claude Code.
+### FAQ
 
-**Q: What if my preferred coach CLI isn't installed?**
-A: Run `meetcoach doctor` — it lists which of `claude`, `gemini`, `codex` are detected on your PATH and gives install hints for the missing ones. If you launch with `--coach-provider X` and that CLI isn't installed, meetcoach exits with an error before opening the TUI — no silent failures.
+**Can I use this with an API key instead of a CLI subscription?**
+Not as-shipped. The auto-coach goes through `claude -p` / `gemini` / `codex exec` subprocesses, all of which use their respective vendor subscriptions. Switching to direct SDK calls would mean refactoring `src/meetcoach/providers.py`.
 
-**Q: Can I use this on Linux or Windows?**
-A: macOS-only today. BlackHole is macOS-only; on Linux you'd swap in PulseAudio's loopback module, on Windows you'd use VB-Audio Cable. The rest of the pipeline (sounddevice, Deepgram, MCP server, Claude CLI) is cross-platform — porting is plausible but unimplemented.
+**Does the `/meeting` watcher have access to my project's MCP servers / skills?**
+The slash command's `allowed-tools` is restricted to `mcp__meetcoach__*` plus `Bash` and `Read` for safety during the watch loop. To give it full project-tool access, edit `share/slash-commands/meeting.md`, remove the `allowed-tools` line, then `make slash-commands` to re-symlink.
 
-**Q: How private is this? Where does my audio go?**
-A: Audio goes to **Deepgram** for transcription (their cloud — your audio is on their servers during the call). Transcripts go to **Anthropic** when Claude is invoked (via your `claude` CLI). Transcripts also save to disk at `transcripts/meeting-<ts>.txt`. If you need fully-local, switch the engine: `meetcoach start --engine whisper` runs faster-whisper locally (lower accuracy, no diarization, but no cloud calls). Claude calls still go to Anthropic though.
+**Multiple projects — install once?**
+Yes. meetcoach itself is installed once. The slash handler is user-scoped (symlinks in `~/.claude/commands/`, `~/.cursor/skills-cursor/`, etc.) and the MCP server is registered at user scope. Per-project, you only need a `CLAUDE.md` / `AGENTS.md` if you want context-aware coaching.
 
-**Q: Will it work for multilingual meetings (Hindi/English code-switching)?**
-A: Yes. Nova-3 with `language=multi` (which we use) supports code-switching across 10 languages including Hindi, Spanish, French, German, Russian, Portuguese, Japanese, Italian, Dutch. Tested working on Hindi/English podcast audio.
+**Privacy — where does my audio go?**
+Audio goes to **Deepgram** (their cloud). Transcripts go to **Anthropic / Google / OpenAI** depending on coach provider. Transcripts also save to local disk at `transcripts/meeting-<ts>.txt`. For fully-local STT, `meetcoach start --engine whisper` runs `faster-whisper` on your machine (lower accuracy, no diarization, no cloud STT calls — coach LLM calls still go to the vendor).
 
-## Troubleshooting
+**Multilingual / Hindi-English code-switching?**
+Yes. Nova-3 with `language=multi` supports 10 languages including Hindi, Spanish, French, German, Russian, Portuguese, Japanese, Italian, Dutch. Tested working on Hindi/English podcast audio.
 
-### Transcript labels things as `You:` when only system audio is playing
-Your mic is picking up the meeting playing through your speakers and the STT is transcribing it twice (once via the mic channel as `You:`, once via the system channel with a `Speaker-N:` label). Either wear headphones, start with `--no-mic`, or press `[m]` in the TUI to mute mid-session.
-
-### Two speakers share the same `Speaker-N` ID, or one speaker is split across two IDs
-Voice diarization isn't perfect — overlapping speech, similar voices, or someone changing mics mid-call can confuse it. Expect roughly 80-90% accuracy on clean 3-5 speaker audio, lower with heavier crosstalk. There's no fix at the meetcoach level; this is a Deepgram diarization limit. If a session has been particularly bad, killing and restarting `meetcoach start` resets the diarization (new session, fresh speaker IDs).
-
-### `BlackHole not found` after install
-Core Audio hasn't picked up the new driver. Run `sudo killall coreaudiod` (briefly cuts audio for ~1s in any app) or reboot.
-
-### YouTube/meeting tab hangs on "loading" when you switch system output
-Reload the tab. Browsers cache the audio device at page load; changing system output mid-stream confuses them.
-
-### Multi-Output Device sends audio to all checked outputs
-That's the intended behavior — there's no auto-fallback. If you uncheck a device that the system happens to be using, audio goes silent until you re-check it or pick a different output. Include only the outputs you actually want active.
-
-### Coach pane stays empty
-The auto coach only fires every 25s and stays silent when nothing is notable. Press `[a]` and ask a direct question to verify the `claude -p` subprocess works. If you get an error, check `which claude` and set `CLAUDE_BIN` in `.env`.
-
-### `/meeting` slash command falls back to Bash polling instead of MCP tools
-Claude Code didn't pick up the MCP server. Check:
-1. `~/.claude/settings.json` has the `mcpServers.meetcoach` block with the correct absolute path
-2. You restarted `claude` after editing settings
-3. Run `claude mcp list` — `meetcoach` should appear with three tools (`get_state`, `read_transcript`, `wait_for_new_lines`)
-
-### Shutdown traceback when quitting the TUI
-Should be fixed as of commit `ac69608`. If you see a `RuntimeError` on `[q]` / Ctrl+C, please report the exact trace.
-
-## Glossary
-
-- **BlackHole** — virtual audio driver that lets one app's output be another app's input. We use it to capture macOS system audio.
-- **Multi-Output Device** — macOS-built feature that mirrors audio to multiple outputs simultaneously. We use it to send sound to both your headphones AND BlackHole.
-- **Diarization** — assigning each piece of speech to a speaker ID. Nova-3 does this on the system-audio channel.
-- **EoT (End of Turn / End of Utterance)** — Deepgram's detection that a speaker has finished a sentence. Used to commit a transcript line.
-- **Mic source vs system source** — the two audio channels meetcoach captures. Mic = your voice (one speaker). System = everyone else, via BlackHole (multiple speakers, diarized).
-- **TUI** — terminal user interface (the Textual app that `meetcoach start` opens).
-- **MCP** — Model Context Protocol. The standard for connecting external tools to Claude Code. Our MCP server (`meetcoach-mcp`) lets the `/meeting` slash command subscribe to transcript updates without polling.
+---
 
 ## Project status
 
-Pre-alpha. Personal tool. No automated tests yet. Treat Claude's suggestions as drafts, not facts — verify before acting on anything that matters.
+Pre-alpha. Personal tool. No automated tests. Treat coach suggestions as drafts — verify before acting on anything that matters. Tonight's commits and the `make` target list show the current state; the [`/meeting` skill prompt](share/skills/meeting/SKILL.md) is the source of truth for how the LLM is instructed to watch.
